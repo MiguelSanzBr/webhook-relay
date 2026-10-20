@@ -35,6 +35,11 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.handler.Timeout, cfg.handler.Forward.MaxAttempts)
 	}
 
+	custom, err := load(env(with("TIMEOUT", "3s")))
+	if err != nil || custom.handler.Timeout != 3*time.Second {
+		t.Fatalf("TIMEOUT=3s ignorado: %v err=%v", custom, err)
+	}
+
 	// config ruim tem q derrubar na subida, não virar um relay q aceita qualquer coisa
 	bad := []struct {
 		name string
