@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MiguelSanzBr/webhook-relay/internal/relay"
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
 )
 
 const goodSecret = "um-segredo-de-pelo-menos-32-caracteres"
@@ -33,7 +33,7 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempts := cfg.relay.Forwarder.(*relay.Forwarder).Retry.MaxAttempts
+	attempts := cfg.relay.Forwarder.(*httpforward.Forwarder).Retry.MaxAttempts
 	if cfg.addr != ":8080" || cfg.relay.Timeout != 10*time.Second || attempts != 4 {
 		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.relay.Timeout, attempts)
 	}

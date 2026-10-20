@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/memory"
 	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
@@ -41,7 +42,7 @@ func newSetup(t *testing.T, burst int) *setup {
 			Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 			Nonces:    memory.NewNonces(5 * time.Minute),
 			Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}),
-			Forwarder: &Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
+			Forwarder: &httpforward.Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
 			Clock:     s.clock.now,
 			Timeout:   5 * time.Second,
 		},

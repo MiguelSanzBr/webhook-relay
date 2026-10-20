@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/memory"
 	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
@@ -88,7 +89,7 @@ func load(getenv func(string) string) (*config, error) {
 		Replay:    domain.ReplayPolicy{Window: window},
 		Nonces:    memory.NewNonces(window),
 		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}),
-		Forwarder: &relay.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
+		Forwarder: &httpforward.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
 		Clock:     time.Now,
 		Timeout:   timeout,
 	}}, nil

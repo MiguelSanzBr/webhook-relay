@@ -1,4 +1,5 @@
-package relay
+// Package httpforward entrega o webhook no destino por HTTP, com retry.
+package httpforward
 
 import (
 	"bytes"
@@ -11,7 +12,7 @@ import (
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
-// Forwarder repassa o webhook pro destino. Erro de rede e timeout contam como
+// Forwarder é o app.Forwarder por HTTP. Erro de rede e timeout contam como
 // temporários; o q fazer com o status do destino é do RetryPolicy.
 type Forwarder struct {
 	URL    string
