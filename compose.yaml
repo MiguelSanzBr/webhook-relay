@@ -1,0 +1,14 @@
+services:
+  relay:
+    build: .
+    ports: ["8080:8080"]
+    environment:
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-troque-este-segredo-de-demo-com-32-chars}
+      TARGET_URL: http://destino:8080/
+    depends_on: [destino]
+
+  # destino de demo: só ecoa no log o que o relay repassou
+  destino:
+    image: mendhak/http-https-echo:31
+    environment:
+      HTTP_PORT: 8080
