@@ -28,7 +28,7 @@ func target(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
 var hook = domain.SignedWebhook{Nonce: "n"}
 
 func forwarder(url string) *Forwarder {
-	return New(url, domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond})
+	return New(url, domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond, AttemptTimeout: 5 * time.Second})
 }
 
 func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
@@ -122,5 +122,25 @@ func TestForwardDoesNotFollowRedirects(t *testing.T) {
 				t.Fatalf("destino=%d outro host=%d, esperado 1 e 0", calls.Load(), otherCalls.Load())
 			}
 		})
+	}
+}
+
+// Destino aceita a conexão e trava: cada tentativa tem prazo próprio, então o retry acontece
+// em vez de a primeira tentativa gastar o TIMEOUT inteiro.
+func TestForwardRetriesHungTarget(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			<-r.Context().Done() // trava até o relay desistir da tentativa
+		}
+	}))
+	t.Cleanup(srv.Close)
+	f := forwarder(srv.URL)
+	f.Retry.AttemptTimeout = 50 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := f.Forward(ctx, hook); err != nil || calls.Load() != 2 {
+		t.Fatalf("err=%v chamadas=%d, esperado sucesso na 2ª", err, calls.Load())
 	}
 }

@@ -43,7 +43,7 @@ func newSetup(t *testing.T, burst int) *setup {
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    memory.NewNonces(5*time.Minute, s.clock.now),
 		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now),
-		Forwarder: httpforward.New(dst.URL, domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}),
+		Forwarder: httpforward.New(dst.URL, domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond, AttemptTimeout: time.Second}),
 		Clock:     s.clock.now,
 		Timeout:   5 * time.Second,
 	}

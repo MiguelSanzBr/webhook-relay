@@ -33,9 +33,13 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempts := cfg.relay.Forwarder.(*httpforward.Forwarder).Retry.MaxAttempts
-	if cfg.addr != ":8080" || cfg.relay.Timeout != 10*time.Second || attempts != 4 {
-		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.relay.Timeout, attempts)
+	retry := cfg.relay.Forwarder.(*httpforward.Forwarder).Retry
+	if cfg.addr != ":8080" || cfg.relay.Timeout != 10*time.Second || retry.MaxAttempts != 4 {
+		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.relay.Timeout, retry.MaxAttempts)
+	}
+	// destino travado não pode gastar o TIMEOUT todo na 1ª tentativa
+	if retry.AttemptTimeout != 2500*time.Millisecond || retry.BackoffBase <= 0 {
+		t.Fatalf("prazo por tentativa %s, esperado TIMEOUT/MAX_ATTEMPTS = 2.5s; backoff %s", retry.AttemptTimeout, retry.BackoffBase)
 	}
 
 	custom, err := load(env(with("TIMEOUT", "3s")))
