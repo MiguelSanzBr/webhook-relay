@@ -60,7 +60,7 @@ func newSetup(t *testing.T, burst int) *setup {
 	t.Cleanup(dst.Close)
 
 	s.relay = &app.RelayWebhook{
-		Secret:    secret,
+		Secrets:   [][]byte{secret},
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    memory.NewNonces(5*time.Minute, s.clock.now),
 		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now, 1000),

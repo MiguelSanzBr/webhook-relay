@@ -61,7 +61,7 @@ func (f *fakeForwarder) Forward(ctx context.Context, w domain.SignedWebhook) err
 func newRelay() (*RelayWebhook, *fakeNonces, *fakeForwarder) {
 	nonces, fwd := &fakeNonces{seen: map[string]bool{}}, &fakeForwarder{}
 	return &RelayWebhook{
-		Secret:    secret,
+		Secrets:   [][]byte{secret},
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    nonces,
 		Limiter:   fakeLimiter{ok: true},
@@ -216,5 +216,31 @@ func TestCallerContextReachesForward(t *testing.T) {
 	}
 	if nonces.releaseCtxErr != nil || nonces.seen["n1"] {
 		t.Fatalf("Release com ctx cancelado (%v) ou nonce preso", nonces.releaseCtxErr)
+	}
+}
+
+// Rotação: durante a troca valem o segredo velho e o novo. Fora da lista, 401.
+func TestRelayAcceptsAnyActiveSecret(t *testing.T) {
+	uc, _, fwd := newRelay()
+	novo := []byte("segredo-novo")
+	uc.Secrets = [][]byte{secret, novo}
+	withSecret := func(s []byte, nonce string) func() (domain.SignedWebhook, error) {
+		return func() (domain.SignedWebhook, error) {
+			w, _ := signed(t0, nonce, `{}`)()
+			w.Signature = domain.Sign(s, w.Timestamp, nonce, w.Body)
+			return w, nil
+		}
+	}
+	if err := uc.Relay(context.Background(), "ip1", withSecret(secret, "n1")); err != nil {
+		t.Fatalf("segredo velho: %v", err)
+	}
+	if err := uc.Relay(context.Background(), "ip1", withSecret(novo, "n2")); err != nil {
+		t.Fatalf("segredo novo: %v", err)
+	}
+	if err := uc.Relay(context.Background(), "ip1", withSecret([]byte("outro"), "n3")); !errors.Is(err, ErrBadSignature) {
+		t.Fatalf("segredo fora da lista: err=%v", err)
+	}
+	if fwd.calls != 2 {
+		t.Fatalf("%d repasses, esperado 2", fwd.calls)
 	}
 }

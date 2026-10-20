@@ -46,6 +46,12 @@ func TestLoadConfig(t *testing.T) {
 		t.Fatalf("prazo por tentativa %s, esperado TIMEOUT/MAX_ATTEMPTS = 2.5s; backoff %s", retry.AttemptTimeout, retry.BackoffBase)
 	}
 
+	// rotação: WEBHOOK_SECRET com dois segredos separados por vírgula, os dois valem
+	rotating, err := load(env(with("WEBHOOK_SECRET", goodSecret+",segredo-novo-tambem-com-32-caracteres")))
+	if err != nil || len(rotating.relay.Secrets) != 2 {
+		t.Fatalf("rotação: %v err=%v", rotating, err)
+	}
+
 	custom, err := load(env(with("TIMEOUT", "3s")))
 	if err != nil || custom.relay.Timeout != 3*time.Second {
 		t.Fatalf("TIMEOUT=3s ignorado: %v err=%v", custom, err)
@@ -60,6 +66,12 @@ func TestLoadConfig(t *testing.T) {
 		{"sem segredo", with("WEBHOOK_SECRET", ""), "WEBHOOK_SECRET"},
 		{"segredo curto", with("WEBHOOK_SECRET", "123"), "WEBHOOK_SECRET"},
 		{"sem destino", with("TARGET_URL", ""), "TARGET_URL"},
+		// URL ruim subia e todo repasse falhava depois
+		{"destino sem esquema", with("TARGET_URL", "destino"), "TARGET_URL"},
+		{"destino ftp", with("TARGET_URL", "ftp://destino/"), "TARGET_URL"},
+		{"destino sem host", with("TARGET_URL", "http:///hook"), "TARGET_URL"},
+		{"segundo segredo curto", with("WEBHOOK_SECRET", goodSecret+",123"), "WEBHOOK_SECRET"},
+		{"segredo do repasse igual a um dos de entrada", with("WEBHOOK_SECRET", "segredo-novo-tambem-com-32-caracteres,"+fwdSecret), "FORWARD_SECRET"},
 		{"sem segredo do repasse", with("FORWARD_SECRET", ""), "FORWARD_SECRET"},
 		{"segredo do repasse curto", with("FORWARD_SECRET", "123"), "FORWARD_SECRET"},
 		// igual ao de entrada, o webhook original já passava no destino sem o relay
