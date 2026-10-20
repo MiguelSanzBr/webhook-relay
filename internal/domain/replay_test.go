@@ -21,11 +21,16 @@ func TestReplayWindow(t *testing.T) {
 	cases := []struct{ name, ts string }{
 		{"6 min no passado", unix(now.Add(-6 * time.Minute))},
 		{"6 min no futuro", unix(now.Add(6 * time.Minute))},
-		{"não é número", "ontem"},
 	}
 	for _, c := range cases {
 		if _, err := p.Check(c.ts, now); !errors.Is(err, ErrStale) {
 			t.Errorf("%s: err=%v, esperado ErrStale", c.name, err)
+		}
+	}
+	// lixo no header não é "velho", é inválido: no log aparece a diferença
+	for _, ts := range []string{"ontem", "1.5", ""} {
+		if _, err := p.Check(ts, now); !errors.Is(err, ErrBadTimestamp) {
+			t.Errorf("ts %q: err=%v, esperado ErrBadTimestamp", ts, err)
 		}
 	}
 }
