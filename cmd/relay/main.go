@@ -61,7 +61,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 		<-ctx.Done()
 		// espera os repasses em andamento terminarem, senão o remetente toma conexão cortada.
 		// Nenhum request vive mais q o WriteTimeout, então esperar isso basta.
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), srv.WriteTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), srv.WriteTimeout)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()

@@ -1,0 +1,29 @@
+version: "2"
+
+linters:
+  enable:
+    - bodyclose     # resposta do destino sem Close vaza conexão
+    - contextcheck  # ctx do request tem q chegar até o repasse
+    - errorlint     # erro comparado com == quebra com wrap
+    - gosec
+    - noctx         # request HTTP sem ctx não tem prazo
+    - revive
+    - unconvert
+    - usestdlibvars
+  settings:
+    revive:
+      rules:
+        - name: exported
+          disabled: true # comentário em toda função exportada vira ruído num binário
+    gosec:
+      excludes:
+        - G704 # "SSRF": as URLs vêm da config de quem sobe o relay, nunca do request
+  exclusions:
+    presets: [std-error-handling]
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx] # segredo fixo e request sem ctx em teste é o esperado
+
+formatters:
+  enable:
+    - gofumpt

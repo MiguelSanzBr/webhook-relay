@@ -28,5 +28,5 @@ func (p RetryPolicy) Again(attempt int, temporary bool) bool {
 // Backoff exponencial com jitter, metade fixa e metade aleatória, pra os retries não baterem todos juntos.
 func (p RetryPolicy) Backoff(attempt int) time.Duration {
 	d := p.BackoffBase << min(attempt-1, 20)
-	return d/2 + rand.N(d/2+1)
+	return d/2 + rand.N(d/2+1) //nolint:gosec // jitter não é segredo, math/rand basta
 }
