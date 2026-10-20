@@ -42,7 +42,7 @@ func newSetup(t *testing.T, burst int) *setup {
 		Secret:    secret,
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    memory.NewNonces(5*time.Minute, s.clock.now),
-		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now),
+		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now, 1000),
 		Forwarder: httpforward.New(dst.URL, []byte("segredo-do-relay-pro-destino"), domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond, AttemptTimeout: time.Second}),
 		Clock:     s.clock.now,
 		Timeout:   5 * time.Second,
@@ -135,6 +135,35 @@ func TestRateLimitPerIP(t *testing.T) {
 	}
 	if codes[0] != http.StatusOK || codes[1] != http.StatusOK || codes[2] != http.StatusTooManyRequests {
 		t.Fatalf("códigos %v, esperado [200 200 429]", codes)
+	}
+}
+
+// Cliente do rate limit: IPv4 inteiro, IPv6 pelo /64 (com um /64 dava pra trocar de endereço
+// a cada requisição e ganhar balde cheio, ou seja, limite nenhum) e IPv4 mapeado igual ao IPv4.
+func TestRateLimitPerClient(t *testing.T) {
+	cases := []struct {
+		name, first, second string
+		want                int
+	}{
+		{"mesmo IPv4", "192.0.2.1:1000", "192.0.2.1:2000", http.StatusTooManyRequests},
+		{"outro IPv4 tem o próprio balde", "192.0.2.1:1000", "192.0.2.2:1000", http.StatusOK},
+		{"mesmo /64", "[2001:db8::1]:1000", "[2001:db8::ffff:1]:1000", http.StatusTooManyRequests},
+		{"outro /64", "[2001:db8::1]:1000", "[2001:db8:0:1::1]:1000", http.StatusOK},
+		{"IPv4 mapeado é o mesmo IPv4", "192.0.2.1:1000", "[::ffff:192.0.2.1]:1000", http.StatusTooManyRequests},
+		{"endereço q não é ip:porta", "@", "@", http.StatusTooManyRequests},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newSetup(t, 1)
+			r1, r2 := s.signed(s.clock.t, "n1", `{}`), s.signed(s.clock.t, "n2", `{}`)
+			r1.RemoteAddr, r2.RemoteAddr = c.first, c.second
+			if got := s.do(r1); got != http.StatusOK {
+				t.Fatalf("primeira: HTTP %d", got)
+			}
+			if got := s.do(r2); got != c.want {
+				t.Fatalf("segunda: HTTP %d, esperado %d", got, c.want)
+			}
+		})
 	}
 }
 

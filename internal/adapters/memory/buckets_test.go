@@ -23,7 +23,7 @@ func allowN(l *Buckets, key string, n int) int {
 
 func TestRateLimiterBurstAndRefill(t *testing.T) {
 	c := &clock{t0}
-	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now, 1000)
 
 	if got := allowN(l, "ip1", 5); got != 3 {
 		t.Fatalf("rajada: %d liberadas, esperado 3", got)
@@ -46,7 +46,7 @@ func TestRateLimiterBurstAndRefill(t *testing.T) {
 // Balde q já encheu de novo é igual a um balde novo, então pode sair da memória.
 func TestIdleBucketsAreSwept(t *testing.T) {
 	c := &clock{t0}
-	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now, 1000)
 	for _, ip := range []string{"a", "b", "c"} {
 		allowN(l, ip, 1)
 	}
@@ -61,7 +61,7 @@ func TestIdleBucketsAreSwept(t *testing.T) {
 // Balde meio vazio não pode sair na varredura: voltava cheio e o cliente ganhava rajada nova.
 func TestSweepKeepsPartialBuckets(t *testing.T) {
 	c := &clock{t0}
-	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now, 1000)
 	allowN(l, "x", 3) // esvazia em t0
 	c.t = t0.Add(2 * time.Second)
 	allowN(l, "x", 1)             // fica com 1
@@ -73,7 +73,7 @@ func TestSweepKeepsPartialBuckets(t *testing.T) {
 
 // Sem o lock, Allow concorrente liberava mais q a rajada (e o -race acusa).
 func TestConcurrentAllowRespectsBurst(t *testing.T) {
-	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 20}, (&clock{t0}).now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 20}, (&clock{t0}).now, 1000)
 	var ok atomic.Int32
 	var wg sync.WaitGroup
 	for range 100 {
@@ -86,5 +86,24 @@ func TestConcurrentAllowRespectsBurst(t *testing.T) {
 	wg.Wait()
 	if ok.Load() != 20 {
 		t.Fatalf("%d liberadas ao mesmo tempo, esperado 20", ok.Load())
+	}
+}
+
+// Teto de baldes: sem ele cada endereço novo vira entrada no mapa até a varredura, e com
+// muito endereço o mapa vai pra milhões. Cheio, cliente novo é recusado; quem já tem balde segue.
+func TestBucketsCap(t *testing.T) {
+	c := &clock{t0}
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now, 2)
+	allowN(l, "a", 1)
+	allowN(l, "b", 1)
+	if allowN(l, "c", 1) != 0 {
+		t.Fatal("cliente novo passou com o mapa cheio")
+	}
+	if allowN(l, "a", 1) != 1 {
+		t.Fatal("cliente q já tinha balde foi barrado")
+	}
+	c.t = t0.Add(10 * time.Second) // a e b encheram de novo e saem na varredura
+	if allowN(l, "c", 1) != 1 {
+		t.Fatal("depois da varredura o cliente novo continuou barrado")
 	}
 }
