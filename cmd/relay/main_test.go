@@ -221,3 +221,37 @@ func TestMainExitsWithOneOnError(t *testing.T) {
 		})
 	}
 }
+
+// distroless não tem shell nem curl: o próprio binário faz o healthcheck do container
+// com `relay -health`, batendo no /healthz da porta do ADDR.
+func TestHealthFlag(t *testing.T) {
+	server := func(code int) string {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(code) }))
+		t.Cleanup(srv.Close)
+		_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+		return ":" + port
+	}
+	cases := []struct {
+		name, addr string
+		want       int
+	}{
+		{"no ar", server(http.StatusNoContent), 0},
+		{"respondendo erro", server(http.StatusServiceUnavailable), 1},
+		{"porta fechada", freeAddr(t), 1},
+		{"ADDR sem porta", "sem-porta", 1},
+	}
+	args := os.Args
+	t.Cleanup(func() { os.Args = args; exit = os.Exit })
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("ADDR", c.addr)
+			os.Args = []string{"relay", "-health"}
+			exited := -1
+			exit = func(code int) { exited = code }
+			main()
+			if exited != c.want {
+				t.Fatalf("exit(%d), esperado %d", exited, c.want)
+			}
+		})
+	}
+}
