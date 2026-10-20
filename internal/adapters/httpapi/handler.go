@@ -3,8 +3,12 @@
 package httpapi
 
 import (
+	"cmp"
+	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"expvar"
 	"io"
 	"log/slog"
 	"math"
@@ -28,14 +32,55 @@ type Handler struct {
 	Log        *slog.Logger
 }
 
+// statuses conta as respostas por rota e status, ex. "POST /webhook 401". Sai em /debug/vars.
+var statuses = expvar.NewMap("http_status")
+
+type logKey struct{}
+
 func (h *Handler) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /webhook", h.webhook)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	return mux
+	mux.Handle("GET /debug/vars", expvar.Handler())
+	return h.observe(mux)
+}
+
+// observe dá um id pra cada request, põe ele em todo log do request, loga uma linha no fim
+// com status e duração e conta o status. O id de fora só vale no formato do nonce: curto e limpo.
+func (h *Handler) observe(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		id := r.Header.Get("X-Request-Id")
+		if !domain.ValidNonce(id) {
+			id = rand.Text()
+		}
+		w.Header().Set("X-Request-Id", id)
+		log := h.Log.With("req_id", id)
+		sw := &statusWriter{ResponseWriter: w, code: http.StatusOK}
+		r = r.WithContext(context.WithValue(r.Context(), logKey{}, log))
+
+		next.ServeHTTP(sw, r)
+
+		route := cmp.Or(r.Pattern, "sem rota") // o mux preenche o Pattern no r q recebeu
+		statuses.Add(route+" "+strconv.Itoa(sw.code), 1)
+		if route != "GET /healthz" { // healthcheck a cada 30 s só enche o log
+			log.Info("request", "route", route, "status", sw.code, "dur_ms", time.Since(start).Milliseconds())
+		}
+	})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	code int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.code = code
+	w.ResponseWriter.WriteHeader(code)
 }
 
 func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
+	log := r.Context().Value(logKey{}).(*slog.Logger)
 	// atrás de proxy o RemoteAddr é o do proxy; aí precisa ler X-Forwarded-For de um proxy confiável
 	ip := clientKey(r.RemoteAddr)
 	var hook domain.SignedWebhook
@@ -61,27 +106,29 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	case err == nil:
 		writeJSON(w, http.StatusOK, "repassado")
 	case errors.Is(err, app.ErrUnavailable):
-		h.Log.Error("store fora", "err", err)
+		log.Error("store fora", "err", err)
 		writeJSON(w, http.StatusServiceUnavailable, "indisponível, tente de novo")
 	case errors.Is(err, app.ErrRateLimited):
 		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(h.RetryAfter.Seconds()))))
 		writeJSON(w, http.StatusTooManyRequests, "muitas requisições")
 	case errors.As(err, new(*http.MaxBytesError)):
+		// o statusWriter esconde do MaxBytesReader o aviso pra fechar a conexão, então fecha aqui
+		w.Header().Set("Connection", "close")
 		writeJSON(w, http.StatusRequestEntityTooLarge, "corpo maior q 1 MiB")
 	case errors.Is(err, errMissingHeaders):
 		writeJSON(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, app.ErrBadSignature):
-		h.Log.Warn("assinatura inválida", "ip", ip)
+		log.Warn("assinatura inválida", "ip", ip)
 		writeJSON(w, http.StatusUnauthorized, "assinatura inválida")
 	case errors.Is(err, domain.ErrStale), errors.Is(err, domain.ErrBadTimestamp), errors.Is(err, domain.ErrReplay):
 		code := http.StatusUnauthorized
 		if errors.Is(err, domain.ErrReplay) {
 			code = http.StatusConflict
 		}
-		h.Log.Warn("webhook recusado", "ip", ip, "nonce", hook.Nonce, "err", err)
+		log.Warn("webhook recusado", "ip", ip, "nonce", hook.Nonce, "err", err)
 		writeJSON(w, code, err.Error())
 	case errors.As(err, new(*app.ForwardError)):
-		h.Log.Error("repasse falhou", "nonce", hook.Nonce, "err", err)
+		log.Error("repasse falhou", "nonce", hook.Nonce, "err", err)
 		writeJSON(w, http.StatusBadGateway, "destino não aceitou, pode tentar de novo")
 	default: // sobra só erro lendo o corpo
 		writeJSON(w, http.StatusBadRequest, "não deu pra ler o corpo")
