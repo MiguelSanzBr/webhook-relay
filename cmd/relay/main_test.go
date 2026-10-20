@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -74,6 +75,26 @@ func TestLoadConfig(t *testing.T) {
 		if _, err := load(env(c.env)); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: err=%v, esperado erro citando %s", c.name, err, c.want)
 		}
+	}
+}
+
+// Sem prazo de leitura e de ociosidade, 1 byte a cada 2 s segurava a conexão pra sempre
+// (slowloris) e keep-alive parado nunca fechava. Cada prazo tem q existir, e o de escrita
+// tem q caber a leitura mais o repasse inteiro, senão corta repasse bom no meio.
+func TestServerHasDeadlines(t *testing.T) {
+	cfg, err := load(env(map[string]string{"WEBHOOK_SECRET": goodSecret, "FORWARD_SECRET": fwdSecret, "TARGET_URL": "http://destino/", "TIMEOUT": "7s"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := cfg.server(slog.New(slog.DiscardHandler))
+	if srv.ReadHeaderTimeout <= 0 || srv.ReadTimeout <= 0 || srv.IdleTimeout <= 0 {
+		t.Fatalf("prazo zerado: header=%s leitura=%s ocioso=%s", srv.ReadHeaderTimeout, srv.ReadTimeout, srv.IdleTimeout)
+	}
+	if srv.MaxHeaderBytes <= 0 || srv.MaxHeaderBytes > 64<<10 {
+		t.Fatalf("MaxHeaderBytes=%d, esperado um teto pequeno", srv.MaxHeaderBytes)
+	}
+	if srv.WriteTimeout < srv.ReadTimeout+7*time.Second {
+		t.Fatalf("WriteTimeout=%s não cabe leitura (%s) + TIMEOUT (7s)", srv.WriteTimeout, srv.ReadTimeout)
 	}
 }
 
