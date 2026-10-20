@@ -47,13 +47,12 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h := &httpapi.Handler{Relay: cfg.relay, RetryAfter: cfg.retryAfter, Log: log}
-
-	srv := &http.Server{Addr: cfg.addr, Handler: h.Routes(), ReadHeaderTimeout: 5 * time.Second}
+	srv := cfg.server(log)
 	go func() {
 		<-ctx.Done()
-		// espera os repasses em andamento terminarem, senão o remetente toma conexão cortada
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.relay.Timeout+time.Second)
+		// espera os repasses em andamento terminarem, senão o remetente toma conexão cortada.
+		// Nenhum request vive mais q o WriteTimeout, então esperar isso basta.
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), srv.WriteTimeout)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
@@ -62,6 +61,25 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// readTimeout é o prazo pra ler header e corpo. Sem ele, mandar 1 byte a cada 2 s
+// segurava a conexão pra sempre.
+const readTimeout = 10 * time.Second
+
+// server monta o http.Server com prazo pra tudo. A resposta só sai depois do repasse,
+// então o WriteTimeout (q conta do fim do header) cabe a leitura e o TIMEOUT inteiro.
+func (c *config) server(log *slog.Logger) *http.Server {
+	h := &httpapi.Handler{Relay: c.relay, RetryAfter: c.retryAfter, Log: log}
+	return &http.Server{
+		Addr:              c.addr,
+		Handler:           h.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      readTimeout + c.relay.Timeout + 5*time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 }
 
 // load lê e valida a config. Valor inválido derruba a subida, nunca cai num padrão em silêncio.
