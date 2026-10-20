@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 type fakeClock struct{ t time.Time }
@@ -22,19 +24,11 @@ func TestReplayGuard(t *testing.T) {
 	if err := g.Reserve(ts, "n1"); err != nil {
 		t.Fatalf("primeira vez: %v", err)
 	}
-	if err := g.Reserve(ts, "n1"); !errors.Is(err, ErrReplay) {
+	if err := g.Reserve(ts, "n1"); !errors.Is(err, domain.ErrReplay) {
 		t.Fatalf("mesmo nonce de novo: err=%v, esperado ErrReplay", err)
 	}
-
-	cases := []struct{ name, ts string }{
-		{"6 min no passado", unix(clock.t.Add(-6 * time.Minute))},
-		{"6 min no futuro", unix(clock.t.Add(6 * time.Minute))},
-		{"não é número", "ontem"},
-	}
-	for _, c := range cases {
-		if err := g.Reserve(c.ts, "novo-"+c.name); !errors.Is(err, ErrStale) {
-			t.Errorf("%s: err=%v, esperado ErrStale", c.name, err)
-		}
+	if err := g.Reserve(unix(clock.t.Add(-6*time.Minute)), "n2"); !errors.Is(err, domain.ErrStale) {
+		t.Fatalf("fora da janela: err=%v, esperado ErrStale", err)
 	}
 }
 

@@ -1,21 +1,16 @@
 package relay
 
 import (
-	"errors"
-	"strconv"
 	"sync"
 	"time"
-)
 
-var (
-	ErrStale  = errors.New("timestamp fora da janela")
-	ErrReplay = errors.New("nonce já usado")
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 // ReplayGuard barra webhook repetido: timestamp tem q estar na janela e o nonce não pode ter aparecido antes.
 // Fica tudo em memória, então vale pra uma instância só. Com mais de uma o nonce tem q ir pro Redis ou Postgres.
 type ReplayGuard struct {
-	window time.Duration
+	policy domain.ReplayPolicy
 	now    func() time.Time
 
 	mu        sync.Mutex
@@ -24,25 +19,21 @@ type ReplayGuard struct {
 }
 
 func NewReplayGuard(window time.Duration, now func() time.Time) *ReplayGuard {
-	return &ReplayGuard{window: window, now: now, seen: map[string]time.Time{}}
+	return &ReplayGuard{policy: domain.ReplayPolicy{Window: window}, now: now, seen: map[string]time.Time{}}
 }
 
 // Reserve confere a janela e guarda o nonce. Chamar depois de validar a
 // assinatura, senão qualquer um enche a memória com nonce inventado.
 func (g *ReplayGuard) Reserve(tsHeader, nonce string) error {
-	sec, err := strconv.ParseInt(tsHeader, 10, 64)
-	if err != nil {
-		return ErrStale
-	}
-	ts := time.Unix(sec, 0)
 	now := g.now()
-	if now.Sub(ts).Abs() > g.window {
-		return ErrStale
+	keepUntil, err := g.policy.Check(tsHeader, now)
+	if err != nil {
+		return err
 	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if now.Sub(g.lastSweep) >= g.window {
+	if now.Sub(g.lastSweep) >= g.policy.Window {
 		for n, exp := range g.seen {
 			if now.After(exp) {
 				delete(g.seen, n)
@@ -51,10 +42,9 @@ func (g *ReplayGuard) Reserve(tsHeader, nonce string) error {
 		g.lastSweep = now
 	}
 	if _, dup := g.seen[nonce]; dup {
-		return ErrReplay
+		return domain.ErrReplay
 	}
-	// depois de ts+window o próprio timestamp já é recusado, não precisa lembrar do nonce
-	g.seen[nonce] = ts.Add(g.window)
+	g.seen[nonce] = keepUntil
 	return nil
 }
 

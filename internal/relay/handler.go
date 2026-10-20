@@ -66,7 +66,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.Guard.Reserve(ts, nonce); err != nil {
 		code := http.StatusUnauthorized
-		if errors.Is(err, ErrReplay) {
+		if errors.Is(err, domain.ErrReplay) {
 			code = http.StatusConflict
 		}
 		h.Log.Warn("webhook recusado", "ip", ip, "nonce", nonce, "err", err)
