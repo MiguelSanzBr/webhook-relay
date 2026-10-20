@@ -4,13 +4,16 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 const (
@@ -107,6 +110,43 @@ func TestServerHasDeadlines(t *testing.T) {
 	}
 	if srv.WriteTimeout < srv.ReadTimeout+7*time.Second {
 		t.Fatalf("WriteTimeout=%s não cabe leitura (%s) + TIMEOUT (7s)", srv.WriteTimeout, srv.ReadTimeout)
+	}
+}
+
+// A montagem do main ligada de verdade, pelo handler: BURST=2, RATE=0.001 e WINDOW=10m.
+// Fresco passa, 6 min de idade passa (com a janela padrão de 5 min seria 401) e o terceiro
+// leva 429 com Retry-After de 1000 s. RATE e BURST trocados ou WINDOW no lugar errado quebram.
+func TestWiringFromEnv(t *testing.T) {
+	dst := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(dst.Close)
+	cfg, err := load(env(map[string]string{
+		"WEBHOOK_SECRET": goodSecret, "FORWARD_SECRET": fwdSecret, "TARGET_URL": dst.URL,
+		"RATE": "0.001", "BURST": "2", "WINDOW": "10m",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := cfg.server(slog.New(slog.DiscardHandler)).Handler
+	send := func(nonce string, age time.Duration) *httptest.ResponseRecorder {
+		ts := strconv.FormatInt(time.Now().Add(-age).Unix(), 10)
+		r := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		r.Header.Set("X-Webhook-Timestamp", ts)
+		r.Header.Set("X-Webhook-Nonce", nonce)
+		r.Header.Set("X-Webhook-Signature", domain.Sign([]byte(goodSecret), ts, nonce, []byte(`{}`)))
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		return rec
+	}
+
+	if got := send("n1", 0).Code; got != http.StatusOK {
+		t.Fatalf("primeiro: HTTP %d, esperado 200", got)
+	}
+	if got := send("n2", 6*time.Minute).Code; got != http.StatusOK {
+		t.Fatalf("6 min com WINDOW=10m: HTTP %d, esperado 200", got)
+	}
+	third := send("n3", 0)
+	if third.Code != http.StatusTooManyRequests || third.Header().Get("Retry-After") != "1000" {
+		t.Fatalf("terceiro: HTTP %d Retry-After=%q, esperado 429 e 1000", third.Code, third.Header().Get("Retry-After"))
 	}
 }
 
