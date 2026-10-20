@@ -11,6 +11,16 @@ import (
 
 const sigPrefix = "sha256="
 
+// SignedWebhook é o webhook como chegou. Timestamp, nonce e corpo são o q o
+// remetente assinou; ContentType só segue junto no repasse.
+type SignedWebhook struct {
+	Timestamp   string
+	Nonce       string
+	Signature   string
+	ContentType string
+	Body        []byte
+}
+
 // Sign assina timestamp, nonce e corpo juntos. Quem manda o webhook calcula igual.
 func Sign(secret []byte, ts, nonce string, body []byte) string {
 	return sigPrefix + hex.EncodeToString(mac(secret, ts, nonce, body))
