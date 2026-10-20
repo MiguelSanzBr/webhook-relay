@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,7 +28,7 @@ func target(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
 var hook = domain.SignedWebhook{Nonce: "n"}
 
 func forwarder(url string) *Forwarder {
-	return &Forwarder{URL: url, Client: http.DefaultClient, Retry: domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}}
+	return New(url, domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond})
 }
 
 func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
@@ -97,5 +98,29 @@ func TestForwardStopsWhenContextEnds(t *testing.T) {
 	err := f.Forward(ctx, hook)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 		t.Fatalf("err=%v depois de %s", err, time.Since(start))
+	}
+}
+
+// Destino responde redirect: o relay não segue. Seguindo, um 307 levava o corpo pra outro host
+// (SSRF a partir do destino) e um 302 virava GET sem corpo, contado como entregue.
+func TestForwardDoesNotFollowRedirects(t *testing.T) {
+	other, otherCalls := target(t, http.StatusOK)
+	for _, code := range []int{301, 302, 307, 308} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			var calls atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				http.Redirect(w, r, other.URL, code)
+			}))
+			t.Cleanup(srv.Close)
+
+			if err := forwarder(srv.URL).Forward(context.Background(), hook); err == nil {
+				t.Fatal("redirect contado como entregue")
+			}
+			// 3xx não é temporário: uma chamada só, e o outro host nunca é tocado
+			if calls.Load() != 1 || otherCalls.Load() != 0 {
+				t.Fatalf("destino=%d outro host=%d, esperado 1 e 0", calls.Load(), otherCalls.Load())
+			}
+		})
 	}
 }
