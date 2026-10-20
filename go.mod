@@ -1,3 +1,5 @@
 module github.com/MiguelSanzBr/webhook-relay
 
-go 1.24.4
+go 1.27
+
+toolchain go1.27.3
