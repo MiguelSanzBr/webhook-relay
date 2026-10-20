@@ -7,8 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
@@ -33,7 +33,7 @@ func (h *Handler) Routes() http.Handler {
 
 func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	// atrás de proxy o RemoteAddr é o do proxy; aí precisa ler X-Forwarded-For de um proxy confiável
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := clientKey(r.RemoteAddr)
 	var hook domain.SignedWebhook
 	err := h.Relay.Relay(r.Context(), ip, func() (domain.SignedWebhook, error) {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
@@ -82,6 +82,21 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	default: // sobra só erro lendo o corpo
 		writeJSON(w, http.StatusBadRequest, "não deu pra ler o corpo")
 	}
+}
+
+// clientKey é a chave do rate limit. IPv6 vale pelo /64, q é o q qualquer VPS recebe:
+// por endereço, quem tem um /64 trocava de IP a cada requisição e não tinha limite.
+func clientKey(remoteAddr string) string {
+	ap, err := netip.ParseAddrPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	ip := ap.Addr().Unmap()
+	if ip.Is4() {
+		return ip.String()
+	}
+	p, _ := ip.Prefix(64) // só falha com bits fora de 0..128
+	return p.String()
 }
 
 func writeJSON(w http.ResponseWriter, code int, status string) {

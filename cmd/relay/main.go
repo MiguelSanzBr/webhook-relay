@@ -20,6 +20,9 @@ import (
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
+// maxClients é o teto de baldes do rate limit, uns 10 MB de memória.
+const maxClients = 100_000
+
 // exit é variável só pra o teste conseguir ver o código de saída sem matar o processo.
 var exit = os.Exit
 
@@ -92,7 +95,7 @@ func load(getenv func(string) string) (*config, error) {
 		Secret:  []byte(secret),
 		Replay:  domain.ReplayPolicy{Window: window},
 		Nonces:  memory.NewNonces(window, time.Now),
-		Limiter: memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
+		Limiter: memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now, maxClients),
 		Forwarder: httpforward.New(target, []byte(fwdSecret), domain.RetryPolicy{
 			MaxAttempts:    attempts,
 			BackoffBase:    200 * time.Millisecond,
