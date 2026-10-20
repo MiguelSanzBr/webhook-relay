@@ -7,8 +7,9 @@ import (
 )
 
 var (
-	ErrStale  = errors.New("timestamp fora da janela")
-	ErrReplay = errors.New("nonce já usado")
+	ErrStale        = errors.New("timestamp fora da janela")
+	ErrBadTimestamp = errors.New("timestamp inválido, esperado unix em segundos")
+	ErrReplay       = errors.New("nonce já usado")
 )
 
 // ReplayPolicy é a regra anti-replay: timestamp dentro da janela e nonce usado uma vez só.
@@ -22,7 +23,7 @@ type ReplayPolicy struct {
 func (p ReplayPolicy) Check(tsHeader string, now time.Time) (keepUntil time.Time, err error) {
 	sec, err := strconv.ParseInt(tsHeader, 10, 64)
 	if err != nil {
-		return time.Time{}, ErrStale
+		return time.Time{}, ErrBadTimestamp
 	}
 	ts := time.Unix(sec, 0)
 	if now.Sub(ts).Abs() > p.Window {

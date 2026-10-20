@@ -69,7 +69,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, app.ErrBadSignature):
 		h.Log.Warn("assinatura inválida", "ip", ip)
 		writeJSON(w, http.StatusUnauthorized, "assinatura inválida")
-	case errors.Is(err, domain.ErrStale), errors.Is(err, domain.ErrReplay):
+	case errors.Is(err, domain.ErrStale), errors.Is(err, domain.ErrBadTimestamp), errors.Is(err, domain.ErrReplay):
 		code := http.StatusUnauthorized
 		if errors.Is(err, domain.ErrReplay) {
 			code = http.StatusConflict
