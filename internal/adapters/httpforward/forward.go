@@ -20,9 +20,9 @@ type Forwarder struct {
 	Retry  domain.RetryPolicy
 }
 
-func (f *Forwarder) Forward(ctx context.Context, nonce, contentType string, body []byte) error {
+func (f *Forwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
 	for attempt := 1; ; attempt++ {
-		temporary, err := f.try(ctx, nonce, contentType, body)
+		temporary, err := f.try(ctx, w)
 		if err == nil || !f.Retry.Again(attempt, temporary) {
 			return err
 		}
@@ -34,15 +34,15 @@ func (f *Forwarder) Forward(ctx context.Context, nonce, contentType string, body
 	}
 }
 
-func (f *Forwarder) try(ctx context.Context, nonce, contentType string, body []byte) (temporary bool, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.URL, bytes.NewReader(body))
+func (f *Forwarder) try(ctx context.Context, w domain.SignedWebhook) (temporary bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.URL, bytes.NewReader(w.Body))
 	if err != nil {
 		return false, err
 	}
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if w.ContentType != "" {
+		req.Header.Set("Content-Type", w.ContentType)
 	}
-	req.Header.Set("Idempotency-Key", nonce)
+	req.Header.Set("Idempotency-Key", w.Nonce)
 
 	resp, err := f.Client.Do(req)
 	if err != nil {

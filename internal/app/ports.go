@@ -5,6 +5,8 @@ package app
 import (
 	"context"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 // NonceStore guarda os nonces já vistos. Reserve devolve false se o nonce já
@@ -21,7 +23,7 @@ type Limiter interface {
 
 // Forwarder entrega o webhook no destino, com os retries q achar certo dentro do prazo do ctx.
 type Forwarder interface {
-	Forward(ctx context.Context, nonce, contentType string, body []byte) error
+	Forward(ctx context.Context, w domain.SignedWebhook) error
 }
 
 // Clock é injetado pra os testes de janela e de rate limit não dependerem de sleep.

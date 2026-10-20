@@ -54,7 +54,7 @@ func (uc *RelayWebhook) Relay(ctx context.Context, client string, read func() (d
 
 	ctx, cancel := context.WithTimeout(ctx, uc.Timeout)
 	defer cancel()
-	if err := uc.Forwarder.Forward(ctx, w.Nonce, w.ContentType, w.Body); err != nil {
+	if err := uc.Forwarder.Forward(ctx, w); err != nil {
 		// o remetente vai tentar de novo com o mesmo nonce; preso, o retry legítimo levava 409
 		uc.Nonces.Release(w.Nonce)
 		return &ForwardError{Err: err}

@@ -24,6 +24,8 @@ func target(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
 	return srv, &calls
 }
 
+var hook = domain.SignedWebhook{Nonce: "n"}
+
 func forwarder(url string) *Forwarder {
 	return &Forwarder{URL: url, Client: http.DefaultClient, Retry: domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}}
 }
@@ -37,7 +39,7 @@ func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if err := forwarder(srv.URL).Forward(context.Background(), "n1", "application/json", []byte(`{"a":1}`)); err != nil {
+	if err := forwarder(srv.URL).Forward(context.Background(), domain.SignedWebhook{Nonce: "n1", ContentType: "application/json", Body: []byte(`{"a":1}`)}); err != nil {
 		t.Fatal(err)
 	}
 	// o nonce vira Idempotency-Key: se o relay reenviar, o destino descarta a cópia
@@ -61,7 +63,7 @@ func TestForwardRetries(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			srv, calls := target(t, c.statuses...)
-			err := forwarder(srv.URL).Forward(context.Background(), "n", "", nil)
+			err := forwarder(srv.URL).Forward(context.Background(), hook)
 			if (err != nil) != c.wantErr || calls.Load() != c.wantCalls {
 				t.Fatalf("err=%v chamadas=%d, esperado erro=%v chamadas=%d", err, calls.Load(), c.wantErr, c.wantCalls)
 			}
@@ -72,13 +74,13 @@ func TestForwardRetries(t *testing.T) {
 func TestForwardTargetDown(t *testing.T) {
 	srv := httptest.NewServer(nil)
 	srv.Close()
-	if err := forwarder(srv.URL).Forward(context.Background(), "n", "", nil); err == nil {
+	if err := forwarder(srv.URL).Forward(context.Background(), hook); err == nil {
 		t.Fatal("destino fora do ar não deu erro")
 	}
 }
 
 func TestForwardBadURL(t *testing.T) {
-	if err := forwarder("http://host com espaço/").Forward(context.Background(), "n", "", nil); err == nil {
+	if err := forwarder("http://host com espaço/").Forward(context.Background(), hook); err == nil {
 		t.Fatal("URL inválida não deu erro")
 	}
 }
@@ -92,7 +94,7 @@ func TestForwardStopsWhenContextEnds(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := f.Forward(ctx, "n", "", nil)
+	err := f.Forward(ctx, hook)
 	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
 		t.Fatalf("err=%v depois de %s", err, time.Since(start))
 	}

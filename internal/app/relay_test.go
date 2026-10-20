@@ -38,9 +38,9 @@ type fakeForwarder struct {
 	hasDeadline bool
 }
 
-func (f *fakeForwarder) Forward(ctx context.Context, nonce, contentType string, body []byte) error {
+func (f *fakeForwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
 	f.calls++
-	f.nonce, f.ct, f.body = nonce, contentType, string(body)
+	f.nonce, f.ct, f.body = w.Nonce, w.ContentType, string(w.Body)
 	_, f.hasDeadline = ctx.Deadline()
 	return f.err
 }
