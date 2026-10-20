@@ -14,21 +14,32 @@ var secret = []byte("s3gredo")
 
 var t0 = time.Unix(1_700_000_000, 0)
 
-type fakeNonces map[string]bool
-
-func (f fakeNonces) Reserve(nonce string, _, _ time.Time) bool {
-	if f[nonce] {
-		return false
-	}
-	f[nonce] = true
-	return true
+type fakeNonces struct {
+	seen          map[string]bool
+	err           error // store fora: Reserve e Release falham
+	releaseCtxErr error // ctx q o Release recebeu já estava cancelado?
 }
 
-func (f fakeNonces) Release(nonce string) { delete(f, nonce) }
+func (f *fakeNonces) Reserve(_ context.Context, nonce string, _ time.Time) (bool, error) {
+	if f.err != nil || f.seen[nonce] {
+		return false, f.err
+	}
+	f.seen[nonce] = true
+	return true, nil
+}
 
-type fakeLimiter bool
+func (f *fakeNonces) Release(ctx context.Context, nonce string) error {
+	f.releaseCtxErr = ctx.Err()
+	delete(f.seen, nonce)
+	return f.err
+}
 
-func (f fakeLimiter) Allow(string, time.Time) bool { return bool(f) }
+type fakeLimiter struct {
+	ok  bool
+	err error
+}
+
+func (f fakeLimiter) Allow(context.Context, string) (bool, error) { return f.ok, f.err }
 
 type fakeForwarder struct {
 	err         error
@@ -36,22 +47,24 @@ type fakeForwarder struct {
 	nonce, ct   string
 	body        string
 	hasDeadline bool
+	ctxErr      error
 }
 
 func (f *fakeForwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
 	f.calls++
 	f.nonce, f.ct, f.body = w.Nonce, w.ContentType, string(w.Body)
 	_, f.hasDeadline = ctx.Deadline()
+	f.ctxErr = ctx.Err()
 	return f.err
 }
 
-func newRelay() (*RelayWebhook, fakeNonces, *fakeForwarder) {
-	nonces, fwd := fakeNonces{}, &fakeForwarder{}
+func newRelay() (*RelayWebhook, *fakeNonces, *fakeForwarder) {
+	nonces, fwd := &fakeNonces{seen: map[string]bool{}}, &fakeForwarder{}
 	return &RelayWebhook{
 		Secret:    secret,
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    nonces,
-		Limiter:   fakeLimiter(true),
+		Limiter:   fakeLimiter{ok: true},
 		Forwarder: fwd,
 		Clock:     func() time.Time { return t0 },
 		Timeout:   time.Second,
@@ -112,15 +125,15 @@ func TestRelayRejects(t *testing.T) {
 	}
 	for _, c := range cases {
 		uc, nonces, fwd := newRelay()
-		uc.Limiter = fakeLimiter(!c.limited)
+		uc.Limiter = fakeLimiter{ok: !c.limited}
 		// read nil estoura se for chamado: limite vem antes de ler o corpo
 		err := uc.Relay(context.Background(), "ip1", c.read)
 		if !errors.Is(err, c.want) {
 			t.Errorf("%s: err=%v, esperado %v", c.name, err, c.want)
 		}
 		// nonce só é guardado depois da assinatura, senão lixo enche a memória
-		if len(nonces) != 0 || fwd.calls != 0 {
-			t.Errorf("%s: nonces=%v repasses=%d, esperado nada", c.name, nonces, fwd.calls)
+		if len(nonces.seen) != 0 || fwd.calls != 0 {
+			t.Errorf("%s: nonces=%v repasses=%d, esperado nada", c.name, nonces.seen, fwd.calls)
 		}
 	}
 }
@@ -136,12 +149,72 @@ func TestFailedForwardReleasesNonce(t *testing.T) {
 	if !errors.As(err, &fe) || !errors.Is(err, down) || err.Error() != down.Error() {
 		t.Fatalf("err=%v, esperado ForwardError com a causa", err)
 	}
-	if nonces["n1"] {
+	if nonces.seen["n1"] {
 		t.Fatal("nonce ficou preso depois do repasse falhar")
 	}
 
 	fwd.err = nil
 	if err := uc.Relay(context.Background(), "ip1", signed(t0, "n1", `{}`)); err != nil {
 		t.Fatalf("retry do remetente: %v", err)
+	}
+}
+
+// Store fora (Redis caiu, por ex.): fail-closed. Sem saber se o nonce é novo, nada é repassado.
+func TestStoreDownFailsClosed(t *testing.T) {
+	down := errors.New("redis: conexão recusada")
+
+	uc, _, fwd := newRelay()
+	uc.Limiter = fakeLimiter{err: down}
+	// read nil estoura se for chamado: sem limite confiável nem lê o corpo
+	if err := uc.Relay(context.Background(), "ip1", nil); !errors.Is(err, ErrUnavailable) || !errors.Is(err, down) {
+		t.Fatalf("limiter fora: err=%v, esperado ErrUnavailable com a causa", err)
+	}
+
+	uc, nonces, fwd := newRelay()
+	nonces.err = down
+	if err := uc.Relay(context.Background(), "ip1", signed(t0, "n1", `{}`)); !errors.Is(err, ErrUnavailable) || !errors.Is(err, down) {
+		t.Fatalf("nonces fora: err=%v, esperado ErrUnavailable com a causa", err)
+	}
+	if fwd.calls != 0 {
+		t.Fatalf("repassou %d vezes sem conseguir guardar o nonce", fwd.calls)
+	}
+}
+
+// Release falhou depois do repasse falhar: o nonce fica preso, então o erro tem q aparecer.
+func TestFailedReleaseIsReported(t *testing.T) {
+	uc, nonces, fwd := newRelay()
+	fwd.err = errors.New("destino: HTTP 503")
+	stuck := errors.New("redis: timeout")
+
+	uc.Nonces = &releaseFails{fakeNonces: nonces, err: stuck}
+	err := uc.Relay(context.Background(), "ip1", signed(t0, "n1", `{}`))
+	if !errors.As(err, new(*ForwardError)) || !errors.Is(err, fwd.err) || !errors.Is(err, stuck) {
+		t.Fatalf("err=%v, esperado ForwardError com as duas causas", err)
+	}
+}
+
+type releaseFails struct {
+	*fakeNonces
+	err error
+}
+
+func (r *releaseFails) Release(context.Context, string) error { return r.err }
+
+// O ctx do remetente chega no repasse: se ele desistiu, o repasse para. Mas liberar o nonce
+// acontece mesmo assim, senão o retry dele levava 409.
+func TestCallerContextReachesForward(t *testing.T) {
+	uc, nonces, fwd := newRelay()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fwd.err = context.Canceled
+
+	if err := uc.Relay(ctx, "ip1", signed(t0, "n1", `{}`)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, esperado context.Canceled", err)
+	}
+	if !errors.Is(fwd.ctxErr, context.Canceled) {
+		t.Fatalf("repasse viu ctx.Err()=%v, o ctx do remetente não chegou", fwd.ctxErr)
+	}
+	if nonces.releaseCtxErr != nil || nonces.seen["n1"] {
+		t.Fatalf("Release com ctx cancelado (%v) ou nonce preso", nonces.releaseCtxErr)
 	}
 }

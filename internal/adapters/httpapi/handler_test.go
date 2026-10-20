@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -22,6 +23,7 @@ var secret = []byte("s3gredo")
 
 type setup struct {
 	h      http.Handler
+	relay  *app.RelayWebhook
 	clock  *fakeClock
 	calls  *atomic.Int32
 	status *atomic.Int32 // o q o destino responde agora
@@ -36,18 +38,16 @@ func newSetup(t *testing.T, burst int) *setup {
 	}))
 	t.Cleanup(dst.Close)
 
-	h := &Handler{
-		Relay: &app.RelayWebhook{
-			Secret:    secret,
-			Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
-			Nonces:    memory.NewNonces(5 * time.Minute),
-			Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}),
-			Forwarder: &httpforward.Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
-			Clock:     s.clock.now,
-			Timeout:   5 * time.Second,
-		},
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	s.relay = &app.RelayWebhook{
+		Secret:    secret,
+		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
+		Nonces:    memory.NewNonces(5*time.Minute, s.clock.now),
+		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now),
+		Forwarder: &httpforward.Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
+		Clock:     s.clock.now,
+		Timeout:   5 * time.Second,
 	}
+	h := &Handler{Relay: s.relay, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	s.h = h.Routes()
 	return s
 }
@@ -151,6 +151,21 @@ func TestFailedForwardLetsSenderRetry(t *testing.T) {
 	if got := s.do(s.signed(s.clock.t, "n1", `{}`)); got != http.StatusOK {
 		t.Fatalf("retry do remetente: HTTP %d, esperado 200", got)
 	}
+}
+
+// Store fora: 503, o remetente tenta de novo depois.
+func TestStoreDownIs503(t *testing.T) {
+	s := newSetup(t, 100)
+	s.relay.Limiter = downLimiter{}
+	if got := s.do(s.signed(s.clock.t, "n1", `{}`)); got != http.StatusServiceUnavailable {
+		t.Fatalf("store fora: HTTP %d, esperado 503", got)
+	}
+}
+
+type downLimiter struct{}
+
+func (downLimiter) Allow(context.Context, string) (bool, error) {
+	return false, errors.New("redis: conexão recusada")
 }
 
 func TestHealthz(t *testing.T) {
