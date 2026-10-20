@@ -20,6 +20,13 @@ type Forwarder struct {
 	Retry  domain.RetryPolicy
 }
 
+// New monta o Forwarder com um client q não segue redirect: 3xx volta como resposta e
+// vira falha. Seguindo, o corpo ia pra outro host e um 302 virava GET sem corpo.
+func New(url string, retry domain.RetryPolicy) *Forwarder {
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Forwarder{URL: url, Client: &http.Client{CheckRedirect: noRedirect}, Retry: retry}
+}
+
 func (f *Forwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
 	for attempt := 1; ; attempt++ {
 		temporary, err := f.try(ctx, w)

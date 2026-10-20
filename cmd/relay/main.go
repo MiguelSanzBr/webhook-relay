@@ -89,7 +89,7 @@ func load(getenv func(string) string) (*config, error) {
 		Replay:    domain.ReplayPolicy{Window: window},
 		Nonces:    memory.NewNonces(window, time.Now),
 		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
-		Forwarder: &httpforward.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
+		Forwarder: httpforward.New(target, domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}),
 		Clock:     time.Now,
 		Timeout:   timeout,
 	}}, nil
