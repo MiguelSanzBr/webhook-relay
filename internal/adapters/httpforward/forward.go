@@ -42,6 +42,8 @@ func (f *Forwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
 }
 
 func (f *Forwarder) try(ctx context.Context, w domain.SignedWebhook) (temporary bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, f.Retry.AttemptTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, f.URL, bytes.NewReader(w.Body))
 	if err != nil {
 		return false, err

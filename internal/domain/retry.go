@@ -9,6 +9,9 @@ import (
 type RetryPolicy struct {
 	MaxAttempts int
 	BackoffBase time.Duration
+	// AttemptTimeout é o prazo de cada tentativa. Sem ele, destino q aceita a conexão
+	// e trava gasta o prazo total na primeira e o retry nunca acontece.
+	AttemptTimeout time.Duration
 }
 
 // TemporaryStatus diz se repetir pode dar outra resposta: 429 e 5xx sim.

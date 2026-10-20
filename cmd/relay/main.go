@@ -85,13 +85,17 @@ func load(getenv func(string) string) (*config, error) {
 		addr = ":8080"
 	}
 	return &config{addr: addr, relay: &app.RelayWebhook{
-		Secret:    []byte(secret),
-		Replay:    domain.ReplayPolicy{Window: window},
-		Nonces:    memory.NewNonces(window, time.Now),
-		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
-		Forwarder: httpforward.New(target, domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}),
-		Clock:     time.Now,
-		Timeout:   timeout,
+		Secret:  []byte(secret),
+		Replay:  domain.ReplayPolicy{Window: window},
+		Nonces:  memory.NewNonces(window, time.Now),
+		Limiter: memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
+		Forwarder: httpforward.New(target, domain.RetryPolicy{
+			MaxAttempts:    attempts,
+			BackoffBase:    200 * time.Millisecond,
+			AttemptTimeout: timeout / time.Duration(attempts),
+		}),
+		Clock:   time.Now,
+		Timeout: timeout,
 	}}, nil
 }
 
