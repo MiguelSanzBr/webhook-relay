@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -84,17 +87,18 @@ func (c *config) server(log *slog.Logger) *http.Server {
 
 // load lê e valida a config. Valor inválido derruba a subida, nunca cai num padrão em silêncio.
 func load(getenv func(string) string) (*config, error) {
-	secret := getenv("WEBHOOK_SECRET")
-	if len(secret) < 32 {
-		return nil, errors.New("WEBHOOK_SECRET obrigatório, com pelo menos 32 caracteres")
+	// mais de um segredo separado por vírgula é a rotação: durante a troca valem os dois
+	secrets := strings.Split(getenv("WEBHOOK_SECRET"), ",")
+	if slices.ContainsFunc(secrets, func(s string) bool { return len(s) < 32 }) {
+		return nil, errors.New("WEBHOOK_SECRET obrigatório, cada segredo com pelo menos 32 caracteres")
 	}
 	fwdSecret := getenv("FORWARD_SECRET")
-	if len(fwdSecret) < 32 || fwdSecret == secret {
+	if len(fwdSecret) < 32 || slices.Contains(secrets, fwdSecret) {
 		return nil, errors.New("FORWARD_SECRET obrigatório, com pelo menos 32 caracteres e diferente do WEBHOOK_SECRET")
 	}
 	target := getenv("TARGET_URL")
-	if target == "" {
-		return nil, errors.New("TARGET_URL obrigatório")
+	if u, err := url.Parse(target); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, errors.New("TARGET_URL obrigatório, http:// ou https:// com host")
 	}
 
 	rate, e1 := positive(getenv, "RATE", 10, func(s string) (float64, error) { return strconv.ParseFloat(s, 64) })
@@ -112,7 +116,7 @@ func load(getenv func(string) string) (*config, error) {
 	}
 	limit := domain.TokenBucket{Rate: rate, Burst: float64(burst)}
 	return &config{addr: addr, retryAfter: limit.Interval(), relay: &app.RelayWebhook{
-		Secret:  []byte(secret),
+		Secrets: bytesOf(secrets),
 		Replay:  domain.ReplayPolicy{Window: window},
 		Nonces:  memory.NewNonces(window, time.Now),
 		Limiter: memory.NewBuckets(limit, time.Now, maxClients),
@@ -124,6 +128,14 @@ func load(getenv func(string) string) (*config, error) {
 		Clock:   time.Now,
 		Timeout: timeout,
 	}}, nil
+}
+
+func bytesOf(ss []string) [][]byte {
+	out := make([][]byte, len(ss))
+	for i, s := range ss {
+		out[i] = []byte(s)
+	}
+	return out
 }
 
 func positive[T int | float64 | time.Duration](getenv func(string) string, key string, def T, conv func(string) (T, error)) (T, error) {

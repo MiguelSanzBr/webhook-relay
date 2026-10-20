@@ -23,7 +23,7 @@ func (e *ForwardError) Unwrap() error { return e.Err }
 // RelayWebhook junta tudo. A ordem importa: limite antes de ler o corpo
 // (barato), assinatura antes do nonce (senão lixo enche a memória).
 type RelayWebhook struct {
-	Secret    []byte
+	Secrets   [][]byte // mais de um é a rotação: durante a troca vale o velho e o novo
 	Replay    domain.ReplayPolicy
 	Nonces    NonceStore
 	Limiter   Limiter
@@ -45,7 +45,7 @@ func (uc *RelayWebhook) Relay(ctx context.Context, client string, read func() (d
 	if err != nil {
 		return err
 	}
-	if !domain.Verify(uc.Secret, w.Timestamp, w.Nonce, w.Body, w.Signature) {
+	if !uc.signed(w) {
 		return ErrBadSignature
 	}
 	keepUntil, err := uc.Replay.Check(w.Timestamp, uc.Clock())
@@ -71,4 +71,15 @@ func (uc *RelayWebhook) Relay(ctx context.Context, client string, read func() (d
 		return &ForwardError{Err: err}
 	}
 	return nil
+}
+
+// signed confere com cada segredo ativo. Cada comparação já é em tempo constante, e
+// quantos segredos tem não é segredo.
+func (uc *RelayWebhook) signed(w domain.SignedWebhook) bool {
+	for _, s := range uc.Secrets {
+		if domain.Verify(s, w.Timestamp, w.Nonce, w.Body, w.Signature) {
+			return true
+		}
+	}
+	return false
 }
