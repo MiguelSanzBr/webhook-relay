@@ -102,6 +102,31 @@ func TestWebhookChecks(t *testing.T) {
 	}
 }
 
+// Regressão da revisão de segurança: com ponto no nonce, a assinatura de um webhook capturado
+// valia de novo com o começo do corpo movido pro nonce, e o destino recebia uma segunda entrega.
+func TestDotShiftReplayIsRejected(t *testing.T) {
+	s := newSetup(t, 100)
+	ts := unix(s.clock.t)
+	body := `{"pedido":42,"valor":10.50,"status":"pago"}`
+	sig := domain.Sign(secret, ts, "evt_123", []byte(body))
+	send := func(nonce, body string) int {
+		r := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(body))
+		r.Header.Set("X-Webhook-Timestamp", ts)
+		r.Header.Set("X-Webhook-Nonce", nonce)
+		r.Header.Set("X-Webhook-Signature", sig)
+		return s.do(r)
+	}
+
+	i := strings.IndexByte(body, '.')
+	codes := []int{send("evt_123", body), send("evt_123", body), send("evt_123."+body[:i], body[i+1:])}
+	if codes[0] != http.StatusOK || codes[1] != http.StatusConflict || codes[2] != http.StatusUnauthorized {
+		t.Fatalf("códigos %v, esperado [200 409 401]", codes)
+	}
+	if n := s.calls.Load(); n != 1 {
+		t.Fatalf("destino recebeu %d entregas, esperado 1", n)
+	}
+}
+
 func TestRateLimitPerIP(t *testing.T) {
 	s := newSetup(t, 2)
 	codes := []int{}
