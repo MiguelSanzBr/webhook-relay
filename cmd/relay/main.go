@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/memory"
+	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 	"github.com/MiguelSanzBr/webhook-relay/internal/relay"
 )
@@ -21,8 +23,8 @@ import (
 var exit = os.Exit
 
 type config struct {
-	addr    string
-	handler *relay.Handler
+	addr  string
+	relay *app.RelayWebhook
 }
 
 func main() {
@@ -40,13 +42,13 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	cfg.handler.Log = log
+	h := &relay.Handler{Relay: cfg.relay, Log: log}
 
-	srv := &http.Server{Addr: cfg.addr, Handler: cfg.handler.Routes(), ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: cfg.addr, Handler: h.Routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
 		<-ctx.Done()
 		// espera os repasses em andamento terminarem, senão o remetente toma conexão cortada
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.handler.Timeout+time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.relay.Timeout+time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}()
@@ -81,12 +83,14 @@ func load(getenv func(string) string) (*config, error) {
 	if addr == "" {
 		addr = ":8080"
 	}
-	return &config{addr: addr, handler: &relay.Handler{
-		Secret:  []byte(secret),
-		Guard:   relay.NewReplayGuard(window, time.Now),
-		Limiter: relay.NewRateLimiter(rate, burst, time.Now),
-		Forward: &relay.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
-		Timeout: timeout,
+	return &config{addr: addr, relay: &app.RelayWebhook{
+		Secret:    []byte(secret),
+		Replay:    domain.ReplayPolicy{Window: window},
+		Nonces:    memory.NewNonces(window),
+		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}),
+		Forwarder: &relay.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
+		Clock:     time.Now,
+		Timeout:   timeout,
 	}}, nil
 }
 

@@ -1,14 +1,16 @@
-package relay
+package memory
 
 import (
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
-func allowN(l *RateLimiter, key string, n int) int {
+func allowN(l *Buckets, key string, now time.Time, n int) int {
 	ok := 0
 	for range n {
-		if l.Allow(key) {
+		if l.Allow(key, now) {
 			ok++
 		}
 	}
@@ -16,37 +18,34 @@ func allowN(l *RateLimiter, key string, n int) int {
 }
 
 func TestRateLimiterBurstAndRefill(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	l := NewRateLimiter(1, 3, clock.now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3})
 
-	if got := allowN(l, "ip1", 5); got != 3 {
+	if got := allowN(l, "ip1", t0, 5); got != 3 {
 		t.Fatalf("rajada: %d liberadas, esperado 3", got)
 	}
-	clock.advance(time.Second)
-	if got := allowN(l, "ip1", 5); got != 1 {
+	now := t0.Add(time.Second)
+	if got := allowN(l, "ip1", now, 5); got != 1 {
 		t.Fatalf("depois de 1 s: %d liberadas, esperado 1", got)
 	}
 	// cada IP tem o próprio balde, um cliente barulhento não derruba os outros
-	if got := allowN(l, "ip2", 5); got != 3 {
+	if got := allowN(l, "ip2", now, 5); got != 3 {
 		t.Fatalf("outro IP: %d liberadas, esperado 3", got)
 	}
 	// parado 1 h não acumula 3600 fichas, o teto é a rajada
-	clock.advance(time.Hour)
-	if got := allowN(l, "ip1", 10); got != 3 {
+	now = now.Add(time.Hour)
+	if got := allowN(l, "ip1", now, 10); got != 3 {
 		t.Fatalf("depois de 1 h: %d liberadas, esperado 3", got)
 	}
 }
 
 // Balde q já encheu de novo é igual a um balde novo, então pode sair da memória.
 func TestIdleBucketsAreSwept(t *testing.T) {
-	clock := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	l := NewRateLimiter(1, 3, clock.now)
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3})
 	for _, ip := range []string{"a", "b", "c"} {
-		l.Allow(ip)
+		l.Allow(ip, t0)
 	}
 
-	clock.advance(10 * time.Second)
-	l.Allow("d")
+	l.Allow("d", t0.Add(10*time.Second))
 	if len(l.buckets) != 1 {
 		t.Fatalf("%d baldes na memória, esperado só o d", len(l.buckets))
 	}

@@ -6,11 +6,14 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/memory"
+	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
@@ -33,12 +36,16 @@ func newSetup(t *testing.T, burst int) *setup {
 	t.Cleanup(dst.Close)
 
 	h := &Handler{
-		Secret:  secret,
-		Guard:   NewReplayGuard(5*time.Minute, s.clock.now),
-		Limiter: NewRateLimiter(1, burst, s.clock.now),
-		Forward: &Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
-		Timeout: 5 * time.Second,
-		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Relay: &app.RelayWebhook{
+			Secret:    secret,
+			Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
+			Nonces:    memory.NewNonces(5 * time.Minute),
+			Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}),
+			Forwarder: &Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
+			Clock:     s.clock.now,
+			Timeout:   5 * time.Second,
+		},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	s.h = h.Routes()
 	return s
@@ -126,6 +133,12 @@ func TestHealthz(t *testing.T) {
 		t.Fatalf("healthz: HTTP %d", got)
 	}
 }
+
+type fakeClock struct{ t time.Time }
+
+func (c *fakeClock) now() time.Time { return c.t }
+
+func unix(t time.Time) string { return strconv.FormatInt(t.Unix(), 10) }
 
 type errReader struct{}
 

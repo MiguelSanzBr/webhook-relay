@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/relay"
 )
 
 const goodSecret = "um-segredo-de-pelo-menos-32-caracteres"
@@ -31,12 +33,13 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.addr != ":8080" || cfg.handler.Timeout != 10*time.Second || cfg.handler.Forward.Retry.MaxAttempts != 4 {
-		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.handler.Timeout, cfg.handler.Forward.Retry.MaxAttempts)
+	attempts := cfg.relay.Forwarder.(*relay.Forwarder).Retry.MaxAttempts
+	if cfg.addr != ":8080" || cfg.relay.Timeout != 10*time.Second || attempts != 4 {
+		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.relay.Timeout, attempts)
 	}
 
 	custom, err := load(env(with("TIMEOUT", "3s")))
-	if err != nil || custom.handler.Timeout != 3*time.Second {
+	if err != nil || custom.relay.Timeout != 3*time.Second {
 		t.Fatalf("TIMEOUT=3s ignorado: %v err=%v", custom, err)
 	}
 

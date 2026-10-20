@@ -1,4 +1,4 @@
-package relay
+package memory
 
 import (
 	"sync"
@@ -7,25 +7,24 @@ import (
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
-// RateLimiter é um token bucket por chave (o IP do cliente). Em memória, uma instância só.
-type RateLimiter struct {
+// Buckets é o app.Limiter em memória: um token bucket por cliente (o IP).
+type Buckets struct {
 	policy domain.TokenBucket
-	now    func() time.Time
 
 	mu        sync.Mutex
 	buckets   map[string]*domain.Bucket
 	lastSweep time.Time
 }
 
-func NewRateLimiter(perSecond float64, burst int, now func() time.Time) *RateLimiter {
-	return &RateLimiter{policy: domain.TokenBucket{Rate: perSecond, Burst: float64(burst)}, now: now, buckets: map[string]*domain.Bucket{}}
+func NewBuckets(policy domain.TokenBucket) *Buckets {
+	return &Buckets{policy: policy, buckets: map[string]*domain.Bucket{}}
 }
 
-func (l *RateLimiter) Allow(key string) bool {
-	now := l.now()
+func (l *Buckets) Allow(client string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	// balde q já encheu de novo é igual a um novo, então pode sair
 	if now.Sub(l.lastSweep) >= l.policy.Refill() {
 		for k, b := range l.buckets {
 			if l.policy.Level(*b, now) >= l.policy.Burst {
@@ -35,11 +34,11 @@ func (l *RateLimiter) Allow(key string) bool {
 		l.lastSweep = now
 	}
 
-	b, ok := l.buckets[key]
+	b, ok := l.buckets[client]
 	if !ok {
 		nb := l.policy.New(now)
 		b = &nb
-		l.buckets[key] = b
+		l.buckets[client] = b
 	}
 	return l.policy.Take(b, now)
 }
