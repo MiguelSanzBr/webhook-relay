@@ -41,18 +41,58 @@ X-Webhook-Signature: sha256=hex(HMAC_SHA256(secret, timestamp + "." + nonce + ".
 - **Retry only when it helps:** network errors, timeouts, 429 and 5xx. Any other 4xx is a bad request and repeating it changes nothing. Exponential backoff with jitter so retries don't all land at once.
 - **Bad config kills startup.** A secret shorter than 32 characters, `RATE=0` or `TIMEOUT=10` (no unit) stop the process with an error instead of silently falling back to a default.
 
+## Architecture
+
+Hexagonal, with the domain in the middle. Arrows are imports, always pointing inward.
+
+```
+                         cmd/relay
+               (config, wiring, HTTP server)
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+ adapters/httpapi      adapters/memory     adapters/httpforward
+ (HTTP entry)          (nonces, buckets)   (HTTP forward, retry)
+        │                     │ implements          │ implements
+        │                     ▼                     ▼
+        └────────────▶ app: RelayWebhook + ports
+                       NonceStore, Limiter, Forwarder, Clock
+                              │
+                              ▼
+                       domain: SignedWebhook, Sign/Verify,
+                       ReplayPolicy, TokenBucket, RetryPolicy
+```
+
+**Why hexagonal here.** The relay's most obvious limit is being single instance, because nonces and buckets live in memory. With the ports, moving to Redis means writing another `NonceStore` and `Limiter` adapter, and the use case, the domain and their tests stay the same. Swapping the synchronous forward for an outbox is another `Forwarder`. And the order of the checks, which is where the security is, lives in one place and is tested without spinning up HTTP.
+
+No ceremony: one use case, four ports, three adapters. The handler uses `RelayWebhook` directly, no interface for something with a single implementation. The dependency rule isn't just in the README: `TestDependencyRule` reads the imports of `internal/domain` and `internal/app` with `go/parser` and fails on `net/http`, an adapter or any package outside the allowlist.
+
+| Guarantee | Where it lives |
+|---|---|
+| HMAC of `ts.nonce.body` and comparison with `hmac.Equal` | `domain/signature.go` |
+| 5 min window and how long to remember the nonce | `domain/replay.go` (`ReplayPolicy`) |
+| Token bucket math, capped at the burst | `domain/ratelimit.go` (`TokenBucket`) |
+| 429 and 5xx retry, other 4xx don't, backoff with jitter | `domain/retry.go` (`RetryPolicy`) |
+| Order rate limit, body, signature, nonce, forward; nonce released when the forward fails; total forward deadline | `app/relay.go` (`RelayWebhook`) |
+| Nonces and buckets in memory, with eviction | `adapters/memory` |
+| Nonce as `Idempotency-Key`, network errors count as temporary | `adapters/httpforward` |
+| Body up to 1 MiB, required headers, errors mapped to 401/409/413/429/502 | `adapters/httpapi` |
+| Validated config, clean shutdown | `cmd/relay` |
+
 ## Tests
 
-Real TDD: every part went in test first, failing, then the code. You can see it in the history, the `Teste: ...` commits come before the code for each part.
+Real TDD: every part went in test first, failing, then the code. You can see it in the history, the `Teste: ...` commits come before the code for each part. The move to hexagonal went in small `Refatoração: ...` commits, green before and after, and every new unit (use case, dependency rule) also went in test first.
 
 | Guarantee | Test |
 |---|---|
 | Changing body, timestamp, nonce or secret invalidates the signature | `TestVerify` |
+| Rate limit before reading the body, nonce stored only after the signature, forward with a deadline and only once | `TestRelayRejects`, `TestRelayForwardsOnce` |
 | Body swapped after signing, missing headers, 6 min old timestamp, same webhook twice, body > 1 MiB and connection dropping mid-read: none of it reaches the target | `TestWebhookChecks` |
-| Target down returns 502, and the sender's retry with the same nonce goes through once the target is back | `TestFailedForwardLetsSenderRetry` |
-| Rate limit burst and refill, one bucket per IP, no accumulation past the cap | `TestRateLimiterBurstAndRefill` |
+| Target down returns 502, and the sender's retry with the same nonce goes through once the target is back | `TestFailedForwardLetsSenderRetry`, `TestFailedForwardReleasesNonce` |
+| Rate limit burst and refill, one bucket per IP, no accumulation past the cap | `TestTokenBucket`, `TestRateLimiterBurstAndRefill` |
 | Old nonces and buckets are evicted from memory | `TestExpiredNoncesAreSwept`, `TestIdleBucketsAreSwept` |
-| Retries on 503/429/500, no retry on 400, stops right away when the client gives up | `TestForwardRetries`, `TestForwardStopsWhenContextEnds` |
+| Retries on 503/429/500, no retry on 400, stops right away when the client gives up | `TestRetryPolicy`, `TestForwardRetries`, `TestForwardStopsWhenContextEnds` |
+| Domain and application without `net/http`, without adapters, allowlist only | `TestDependencyRule` |
 | Invalid config kills startup; `SIGINT` shuts down cleanly | `TestLoadConfig`, `TestMainGracefulShutdown` |
 
 100% statement coverage, enforced in CI. The clock is injected, so window and rate limit tests don't `sleep`.
@@ -105,11 +145,18 @@ go tool cover -func=cover.out | tail -1
 ## Layout
 
 ```
-cmd/relay          config, HTTP server and shutdown
-internal/relay
-  signature.go     HMAC-SHA256 and constant-time comparison
-  replay.go        timestamp window and nonce
-  ratelimit.go     per-IP token bucket
-  forward.go       forward with retries
-  handler.go       order of the checks
+cmd/relay              config, wiring, HTTP server and shutdown
+internal/domain        rules with no HTTP and no I/O
+  signature.go         SignedWebhook, HMAC-SHA256 and constant-time comparison
+  replay.go            timestamp window
+  ratelimit.go         token bucket math
+  retry.go             when to retry and backoff
+internal/app
+  ports.go             NonceStore, Limiter, Forwarder, Clock
+  relay.go             RelayWebhook use case, order of the checks
+internal/adapters
+  memory               nonces and rate limit buckets in memory, with eviction
+  httpforward          HTTP forward with retries
+  httpapi              handler, body limit, error to status, healthz
+internal/deps_test.go  dependency rule
 ```

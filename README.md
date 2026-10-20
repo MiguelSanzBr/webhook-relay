@@ -41,18 +41,58 @@ X-Webhook-Signature: sha256=hex(HMAC_SHA256(segredo, timestamp + "." + nonce + "
 - **Retry só quando adianta:** rede, timeout, 429 e 5xx. Outro 4xx é erro do pedido, repetir não muda nada. Backoff exponencial com jitter pra os retries não baterem todos juntos.
 - **Config ruim derruba a subida.** Segredo com menos de 32 caracteres, `RATE=0` ou `TIMEOUT=10` (sem unidade) param o processo com erro, em vez de cair num padrão em silêncio.
 
+## Arquitetura
+
+Hexagonal, com o domínio no meio. Seta é import, sempre de fora pra dentro.
+
+```
+                         cmd/relay
+              (config, monta as peças, servidor)
+                              │
+        ┌─────────────────────┼─────────────────────┐
+        ▼                     ▼                     ▼
+ adapters/httpapi      adapters/memory     adapters/httpforward
+ (entrada HTTP)        (nonce, baldes)     (repasse HTTP, retry)
+        │                     │ implementa          │ implementa
+        │                     ▼                     ▼
+        └────────────▶ app: RelayWebhook + ports
+                       NonceStore, Limiter, Forwarder, Clock
+                              │
+                              ▼
+                       domain: SignedWebhook, Sign/Verify,
+                       ReplayPolicy, TokenBucket, RetryPolicy
+```
+
+**Por que hexagonal aqui.** O limite mais óbvio do relay é ser uma instância só, pq nonce e balde ficam em memória. Com os ports, ir pro Redis é escrever outro adapter de `NonceStore` e `Limiter`, e caso de uso, domínio e os testes deles não mudam. Trocar o repasse síncrono por uma outbox é outro `Forwarder`. E a ordem das checagens, q é onde mora a segurança, fica num lugar só e é testada sem subir HTTP.
+
+Sem cerimônia: um caso de uso, quatro ports, três adapters. O handler usa o `RelayWebhook` direto, sem interface pra algo q só tem uma implementação. A regra de dependência não fica só no README: `TestDependencyRule` lê os imports de `internal/domain` e `internal/app` com `go/parser` e falha se aparecer `net/http`, adapter ou qualquer pacote fora da lista.
+
+| Garantia | Onde mora |
+|---|---|
+| HMAC de `ts.nonce.corpo` e comparação com `hmac.Equal` | `domain/signature.go` |
+| Janela de 5 min e até quando lembrar do nonce | `domain/replay.go` (`ReplayPolicy`) |
+| Conta do token bucket, teto na rajada | `domain/ratelimit.go` (`TokenBucket`) |
+| 429 e 5xx repetem, outro 4xx não, backoff com jitter | `domain/retry.go` (`RetryPolicy`) |
+| Ordem limite, corpo, assinatura, nonce, repasse; nonce liberado se o repasse falha; prazo total do repasse | `app/relay.go` (`RelayWebhook`) |
+| Nonce e balde em memória, com limpeza | `adapters/memory` |
+| Nonce como `Idempotency-Key`, erro de rede conta como temporário | `adapters/httpforward` |
+| Corpo até 1 MiB, headers obrigatórios, erro vira 401/409/413/429/502 | `adapters/httpapi` |
+| Config validada, shutdown limpo | `cmd/relay` |
+
 ## Testes
 
-TDD de verdade: cada parte entrou com o teste primeiro, falhando, e o código depois. Dá pra ver no histórico, os commits `Teste: ...` vêm antes do código de cada parte.
+TDD de verdade: cada parte entrou com o teste primeiro, falhando, e o código depois. Dá pra ver no histórico, os commits `Teste: ...` vêm antes do código de cada parte. A ida pra hexagonal foi em commits `Refatoração: ...` pequenos, com tudo verde antes e depois, e o q era unidade nova (caso de uso, regra de dependência) também entrou com o teste primeiro.
 
 | Garantia | Teste |
 |---|---|
 | Corpo, timestamp, nonce ou segredo alterado invalida a assinatura | `TestVerify` |
+| Limite antes de ler o corpo, nonce só guardado depois da assinatura, repasse com prazo e uma vez só | `TestRelayRejects`, `TestRelayForwardsOnce` |
 | Corpo trocado depois de assinar, sem header, timestamp de 6 min, mesmo webhook duas vezes, corpo > 1 MiB e conexão caindo no meio da leitura: nada disso chega no destino | `TestWebhookChecks` |
-| Destino fora devolve 502 e o retry do remetente com o mesmo nonce passa quando o destino volta | `TestFailedForwardLetsSenderRetry` |
-| Rajada e reposição do rate limit, cada IP com seu balde, teto não acumula | `TestRateLimiterBurstAndRefill` |
+| Destino fora devolve 502 e o retry do remetente com o mesmo nonce passa quando o destino volta | `TestFailedForwardLetsSenderRetry`, `TestFailedForwardReleasesNonce` |
+| Rajada e reposição do rate limit, cada IP com seu balde, teto não acumula | `TestTokenBucket`, `TestRateLimiterBurstAndRefill` |
 | Nonce e balde velhos saem da memória | `TestExpiredNoncesAreSwept`, `TestIdleBucketsAreSwept` |
-| Retry em 503/429/500, nenhum retry em 400, para na hora quando o cliente desiste | `TestForwardRetries`, `TestForwardStopsWhenContextEnds` |
+| Retry em 503/429/500, nenhum retry em 400, para na hora quando o cliente desiste | `TestRetryPolicy`, `TestForwardRetries`, `TestForwardStopsWhenContextEnds` |
+| Domínio e aplicação sem `net/http`, sem adapter, só o permitido | `TestDependencyRule` |
 | Config inválida derruba a subida; `SIGINT` desliga limpo | `TestLoadConfig`, `TestMainGracefulShutdown` |
 
 Cobertura de 100% das instruções, com gate no CI. Relógio injetado, então os testes de janela e de rate limit não usam `sleep`.
@@ -105,11 +145,18 @@ go tool cover -func=cover.out | tail -1
 ## Estrutura
 
 ```
-cmd/relay          config, servidor HTTP e shutdown
-internal/relay
-  signature.go     HMAC-SHA256 e comparação em tempo constante
-  replay.go        janela de timestamp e nonce
-  ratelimit.go     token bucket por IP
-  forward.go       repasse com retry
-  handler.go       ordem das checagens
+cmd/relay              config, monta as peças, servidor HTTP e shutdown
+internal/domain        regras sem HTTP e sem I/O
+  signature.go         SignedWebhook, HMAC-SHA256 e comparação em tempo constante
+  replay.go            janela do timestamp
+  ratelimit.go         conta do token bucket
+  retry.go             quando repetir e backoff
+internal/app
+  ports.go             NonceStore, Limiter, Forwarder, Clock
+  relay.go             caso de uso RelayWebhook, ordem das checagens
+internal/adapters
+  memory               nonce e balde de rate limit em memória, com limpeza
+  httpforward          repasse HTTP com retry
+  httpapi              handler, limite do corpo, erro pra status, healthz
+internal/deps_test.go  regra de dependência
 ```
