@@ -4,9 +4,11 @@ package httpforward
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
@@ -14,17 +16,22 @@ import (
 
 // Forwarder é o app.Forwarder por HTTP. Erro de rede e timeout contam como
 // temporários; o q fazer com o status do destino é do RetryPolicy.
+//
+// O repasse sai assinado de novo com Secret, no mesmo formato da entrada
+// (X-Webhook-Timestamp, -Nonce, -Signature). Assim o destino confere q veio do
+// relay e quem alcança o destino direto não pula as checagens.
 type Forwarder struct {
 	URL    string
+	Secret []byte
 	Client *http.Client
 	Retry  domain.RetryPolicy
 }
 
 // New monta o Forwarder com um client q não segue redirect: 3xx volta como resposta e
 // vira falha. Seguindo, o corpo ia pra outro host e um 302 virava GET sem corpo.
-func New(url string, retry domain.RetryPolicy) *Forwarder {
+func New(url string, secret []byte, retry domain.RetryPolicy) *Forwarder {
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Forwarder{URL: url, Client: &http.Client{CheckRedirect: noRedirect}, Retry: retry}
+	return &Forwarder{URL: url, Secret: secret, Client: &http.Client{CheckRedirect: noRedirect}, Retry: retry}
 }
 
 func (f *Forwarder) Forward(ctx context.Context, w domain.SignedWebhook) error {
@@ -51,11 +58,16 @@ func (f *Forwarder) try(ctx context.Context, w domain.SignedWebhook) (temporary 
 	if w.ContentType != "" {
 		req.Header.Set("Content-Type", w.ContentType)
 	}
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	req.Header.Set("Idempotency-Key", w.Nonce)
+	req.Header.Set("X-Webhook-Timestamp", ts)
+	req.Header.Set("X-Webhook-Nonce", w.Nonce)
+	req.Header.Set("X-Webhook-Signature", domain.Sign(f.Secret, ts, w.Nonce, w.Body))
 
 	resp, err := f.Client.Do(req)
 	if err != nil {
-		return true, err
+		// o Do sempre devolve *url.Error, q leva a URL inteira (e token na query) pro log
+		return true, fmt.Errorf("destino: %w", errors.Unwrap(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))

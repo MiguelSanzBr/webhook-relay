@@ -67,7 +67,7 @@ func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
 func TestForwardErrorHidesURL(t *testing.T) {
 	srv := httptest.NewServer(nil)
 	srv.Close()
-	err := forwarder(srv.URL + "/?token=segredo").Forward(context.Background(), hook)
+	err := forwarder(srv.URL+"/?token=segredo").Forward(context.Background(), hook)
 	if err == nil || strings.Contains(err.Error(), "segredo") {
 		t.Fatalf("err=%v", err)
 	}

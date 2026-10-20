@@ -66,6 +66,10 @@ func load(getenv func(string) string) (*config, error) {
 	if len(secret) < 32 {
 		return nil, errors.New("WEBHOOK_SECRET obrigatório, com pelo menos 32 caracteres")
 	}
+	fwdSecret := getenv("FORWARD_SECRET")
+	if len(fwdSecret) < 32 || fwdSecret == secret {
+		return nil, errors.New("FORWARD_SECRET obrigatório, com pelo menos 32 caracteres e diferente do WEBHOOK_SECRET")
+	}
 	target := getenv("TARGET_URL")
 	if target == "" {
 		return nil, errors.New("TARGET_URL obrigatório")
@@ -89,7 +93,7 @@ func load(getenv func(string) string) (*config, error) {
 		Replay:  domain.ReplayPolicy{Window: window},
 		Nonces:  memory.NewNonces(window, time.Now),
 		Limiter: memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
-		Forwarder: httpforward.New(target, domain.RetryPolicy{
+		Forwarder: httpforward.New(target, []byte(fwdSecret), domain.RetryPolicy{
 			MaxAttempts:    attempts,
 			BackoffBase:    200 * time.Millisecond,
 			AttemptTimeout: timeout / time.Duration(attempts),
