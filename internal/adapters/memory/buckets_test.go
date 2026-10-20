@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -53,5 +55,36 @@ func TestIdleBucketsAreSwept(t *testing.T) {
 	allowN(l, "d", 1)
 	if len(l.buckets) != 1 {
 		t.Fatalf("%d baldes na memória, esperado só o d", len(l.buckets))
+	}
+}
+
+// Balde meio vazio não pode sair na varredura: voltava cheio e o cliente ganhava rajada nova.
+func TestSweepKeepsPartialBuckets(t *testing.T) {
+	c := &clock{t0}
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 3}, c.now)
+	allowN(l, "x", 3) // esvazia em t0
+	c.t = t0.Add(2 * time.Second)
+	allowN(l, "x", 1)             // fica com 1
+	c.t = t0.Add(3 * time.Second) // Refill passou: esta chamada varre, x tem 2 de 3
+	if got := allowN(l, "x", 5); got != 2 {
+		t.Fatalf("depois da varredura: %d liberadas, esperado 2 (o balde parcial sumiu)", got)
+	}
+}
+
+// Sem o lock, Allow concorrente liberava mais q a rajada (e o -race acusa).
+func TestConcurrentAllowRespectsBurst(t *testing.T) {
+	l := NewBuckets(domain.TokenBucket{Rate: 1, Burst: 20}, (&clock{t0}).now)
+	var ok atomic.Int32
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			if allowed, _ := l.Allow(ctx, "ip1"); allowed {
+				ok.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if ok.Load() != 20 {
+		t.Fatalf("%d liberadas ao mesmo tempo, esperado 20", ok.Load())
 	}
 }
