@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 	"github.com/MiguelSanzBr/webhook-relay/internal/relay"
 )
 
@@ -84,7 +85,7 @@ func load(getenv func(string) string) (*config, error) {
 		Secret:  []byte(secret),
 		Guard:   relay.NewReplayGuard(window, time.Now),
 		Limiter: relay.NewRateLimiter(rate, burst, time.Now),
-		Forward: &relay.Forwarder{URL: target, Client: &http.Client{}, MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond},
+		Forward: &relay.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
 		Timeout: timeout,
 	}}, nil
 }

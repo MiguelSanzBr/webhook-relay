@@ -36,7 +36,7 @@ func newSetup(t *testing.T, burst int) *setup {
 		Secret:  secret,
 		Guard:   NewReplayGuard(5*time.Minute, s.clock.now),
 		Limiter: NewRateLimiter(1, burst, s.clock.now),
-		Forward: &Forwarder{URL: dst.URL, Client: dst.Client(), MaxAttempts: 2, BackoffBase: time.Millisecond},
+		Forward: &Forwarder{URL: dst.URL, Client: dst.Client(), Retry: domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond}},
 		Timeout: 5 * time.Second,
 		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}

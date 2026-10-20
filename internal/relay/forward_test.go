@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 // target responde com os status da lista, um por chamada, e repete o último.
@@ -23,7 +25,7 @@ func target(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
 }
 
 func forwarder(url string) *Forwarder {
-	return &Forwarder{URL: url, Client: http.DefaultClient, MaxAttempts: 3, BackoffBase: time.Millisecond}
+	return &Forwarder{URL: url, Client: http.DefaultClient, Retry: domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond}}
 }
 
 func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
@@ -85,7 +87,7 @@ func TestForwardBadURL(t *testing.T) {
 func TestForwardStopsWhenContextEnds(t *testing.T) {
 	srv, _ := target(t, 503)
 	f := forwarder(srv.URL)
-	f.BackoffBase = time.Hour
+	f.Retry.BackoffBase = time.Hour
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 

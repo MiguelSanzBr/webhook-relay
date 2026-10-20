@@ -31,8 +31,8 @@ func TestLoadConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.addr != ":8080" || cfg.handler.Timeout != 10*time.Second || cfg.handler.Forward.MaxAttempts != 4 {
-		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.handler.Timeout, cfg.handler.Forward.MaxAttempts)
+	if cfg.addr != ":8080" || cfg.handler.Timeout != 10*time.Second || cfg.handler.Forward.Retry.MaxAttempts != 4 {
+		t.Fatalf("padrões errados: addr=%s timeout=%s attempts=%d", cfg.addr, cfg.handler.Timeout, cfg.handler.Forward.Retry.MaxAttempts)
 	}
 
 	custom, err := load(env(with("TIMEOUT", "3s")))
