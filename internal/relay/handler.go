@@ -1,3 +1,5 @@
+// Package relay recebe webhooks, confere assinatura, bloqueia replay e
+// limite de taxa, e repassa pro destino com retry.
 package relay
 
 import (
@@ -9,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 const maxBody = 1 << 20
@@ -55,7 +59,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, "faltam os headers X-Webhook-Timestamp, X-Webhook-Nonce e X-Webhook-Signature")
 		return
 	}
-	if !Verify(h.Secret, ts, nonce, body, sig) {
+	if !domain.Verify(h.Secret, ts, nonce, body, sig) {
 		h.Log.Warn("assinatura inválida", "ip", ip)
 		writeJSON(w, http.StatusUnauthorized, "assinatura inválida")
 		return

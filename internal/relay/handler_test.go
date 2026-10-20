@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
 var secret = []byte("s3gredo")
@@ -48,7 +50,7 @@ func (s *setup) signed(ts time.Time, nonce, body string) *http.Request {
 	t := unix(ts)
 	r.Header.Set("X-Webhook-Timestamp", t)
 	r.Header.Set("X-Webhook-Nonce", nonce)
-	r.Header.Set("X-Webhook-Signature", Sign(secret, t, nonce, []byte(body)))
+	r.Header.Set("X-Webhook-Signature", domain.Sign(secret, t, nonce, []byte(body)))
 	r.Header.Set("Content-Type", "application/json")
 	return r
 }

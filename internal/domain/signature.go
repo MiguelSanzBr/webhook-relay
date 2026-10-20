@@ -1,6 +1,6 @@
-// Package relay recebe webhooks, confere assinatura, bloqueia replay e
-// limite de taxa, e repassa pro destino com retry.
-package relay
+// Package domain tem as regras do relay sem HTTP e sem I/O: assinatura,
+// janela do timestamp, token bucket e quando vale repetir o repasse.
+package domain
 
 import (
 	"crypto/hmac"
