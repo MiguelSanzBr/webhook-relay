@@ -1,6 +1,6 @@
-// Package relay recebe webhooks, confere assinatura, bloqueia replay e
-// limite de taxa, e repassa pro destino com retry.
-package relay
+// Package httpapi é a porta de entrada HTTP: lê o webhook, chama o caso de uso
+// e traduz o erro dele pra status.
+package httpapi
 
 import (
 	"encoding/json"

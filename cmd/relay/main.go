@@ -13,11 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpapi"
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/memory"
 	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
-	"github.com/MiguelSanzBr/webhook-relay/internal/relay"
 )
 
 // exit é variável só pra o teste conseguir ver o código de saída sem matar o processo.
@@ -43,7 +43,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h := &relay.Handler{Relay: cfg.relay, Log: log}
+	h := &httpapi.Handler{Relay: cfg.relay, Log: log}
 
 	srv := &http.Server{Addr: cfg.addr, Handler: h.Routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
