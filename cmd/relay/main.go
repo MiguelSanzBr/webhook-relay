@@ -2,10 +2,12 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,6 +38,10 @@ type config struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "-health" {
+		exit(health(os.Getenv("ADDR")))
+		return
+	}
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -64,6 +70,27 @@ func run(ctx context.Context, log *slog.Logger) error {
 		return err
 	}
 	return nil
+}
+
+// health é o healthcheck do container: distroless não tem shell nem curl, então o
+// próprio binário bate no /healthz da porta do ADDR. Devolve o código de saída.
+func health(addr string) int {
+	_, port, err := net.SplitHostPort(cmp.Or(addr, ":8080"))
+	if err != nil {
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+port+"/healthz", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 1
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		return 1
+	}
+	return 0
 }
 
 // readTimeout é o prazo pra ler header e corpo. Sem ele, mandar 1 byte a cada 2 s
