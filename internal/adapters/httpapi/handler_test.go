@@ -19,7 +19,16 @@ import (
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
 )
 
-var secret = []byte("s3gredo")
+var (
+	secret    = []byte("s3gredo")
+	fwdSecret = []byte("segredo-do-relay-pro-destino")
+)
+
+// received é o q o destino falso viu no último repasse.
+type received struct {
+	header http.Header
+	body   string
+}
 
 type setup struct {
 	h       http.Handler
@@ -28,13 +37,20 @@ type setup struct {
 	clock   *fakeClock
 	calls   *atomic.Int32
 	status  *atomic.Int32 // o q o destino responde agora
+	last    chan received // último repasse, buffer de 1
 }
 
 func newSetup(t *testing.T, burst int) *setup {
-	s := &setup{clock: &fakeClock{t: time.Unix(1_700_000_000, 0)}, calls: &atomic.Int32{}, status: &atomic.Int32{}}
+	s := &setup{clock: &fakeClock{t: time.Unix(1_700_000_000, 0)}, calls: &atomic.Int32{}, status: &atomic.Int32{}, last: make(chan received, 1)}
 	s.status.Store(http.StatusOK)
-	dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.calls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		select {
+		case <-s.last: // descarta o anterior, fica só o último
+		default:
+		}
+		s.last <- received{r.Header, string(body)}
 		w.WriteHeader(int(s.status.Load()))
 	}))
 	t.Cleanup(dst.Close)
@@ -44,7 +60,7 @@ func newSetup(t *testing.T, burst int) *setup {
 		Replay:    domain.ReplayPolicy{Window: 5 * time.Minute},
 		Nonces:    memory.NewNonces(5*time.Minute, s.clock.now),
 		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: 1, Burst: float64(burst)}, s.clock.now, 1000),
-		Forwarder: httpforward.New(dst.URL, []byte("segredo-do-relay-pro-destino"), domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond, AttemptTimeout: time.Second}),
+		Forwarder: httpforward.New(dst.URL, fwdSecret, domain.RetryPolicy{MaxAttempts: 2, BackoffBase: time.Millisecond, AttemptTimeout: time.Second}),
 		Clock:     s.clock.now,
 		Timeout:   5 * time.Second,
 	}
@@ -72,36 +88,72 @@ func (s *setup) rec(r *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
+// Cada recusa num setup próprio: nada disso pode chegar no destino.
 func TestWebhookChecks(t *testing.T) {
-	s := newSetup(t, 100)
-	now := s.clock.t
-
-	tampered := s.signed(now, "n-adulterado", `{"valor":10}`)
-	tampered.Body = io.NopCloser(strings.NewReader(`{"valor":10000}`))
-	unsigned := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
-	broken := s.signed(now, "n-quebrado", `{}`)
-	broken.Body = io.NopCloser(errReader{})
-
 	cases := []struct {
 		name string
-		req  *http.Request
+		req  func(s *setup) *http.Request
 		want int
 	}{
-		{"assinado e na janela", s.signed(now, "n1", `{"pedido":42}`), http.StatusOK},
-		{"mesmo webhook de novo", s.signed(now, "n1", `{"pedido":42}`), http.StatusConflict},
-		{"corpo trocado depois de assinar", tampered, http.StatusUnauthorized},
-		{"sem headers de assinatura", unsigned, http.StatusUnauthorized},
-		{"assinado certo mas com 6 min", s.signed(now.Add(-6*time.Minute), "n-velho", `{}`), http.StatusUnauthorized},
-		{"corpo maior q 1 MiB", s.signed(now, "n-grande", strings.Repeat("a", maxBody+1)), http.StatusRequestEntityTooLarge},
-		{"conexão caiu lendo o corpo", broken, http.StatusBadRequest},
+		{"corpo trocado depois de assinar", func(s *setup) *http.Request {
+			r := s.signed(s.clock.t, "n1", `{"valor":10}`)
+			r.Body = io.NopCloser(strings.NewReader(`{"valor":10000}`))
+			return r
+		}, http.StatusUnauthorized},
+		{"sem headers de assinatura", func(*setup) *http.Request {
+			return httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+		}, http.StatusUnauthorized},
+		{"assinado certo mas com 6 min", func(s *setup) *http.Request {
+			return s.signed(s.clock.t.Add(-6*time.Minute), "n1", `{}`)
+		}, http.StatusUnauthorized},
+		{"timestamp q não é número", func(s *setup) *http.Request {
+			r := httptest.NewRequest(http.MethodPost, "/webhook", strings.NewReader(`{}`))
+			r.Header.Set("X-Webhook-Timestamp", "ontem")
+			r.Header.Set("X-Webhook-Nonce", "n1")
+			r.Header.Set("X-Webhook-Signature", domain.Sign(secret, "ontem", "n1", []byte(`{}`)))
+			return r
+		}, http.StatusUnauthorized},
+		{"corpo maior q 1 MiB", func(s *setup) *http.Request {
+			return s.signed(s.clock.t, "n1", strings.Repeat("a", maxBody+1))
+		}, http.StatusRequestEntityTooLarge},
+		{"conexão caiu lendo o corpo", func(s *setup) *http.Request {
+			r := s.signed(s.clock.t, "n1", `{}`)
+			r.Body = io.NopCloser(errReader{})
+			return r
+		}, http.StatusBadRequest},
 	}
 	for _, c := range cases {
-		if got := s.do(c.req); got != c.want {
-			t.Errorf("%s: HTTP %d, esperado %d", c.name, got, c.want)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			s := newSetup(t, 100)
+			if got := s.do(c.req(s)); got != c.want {
+				t.Fatalf("HTTP %d, esperado %d", got, c.want)
+			}
+			if n := s.calls.Load(); n != 0 {
+				t.Fatalf("destino recebeu %d webhooks, esperado nenhum", n)
+			}
+		})
 	}
-	if n := s.calls.Load(); n != 1 {
-		t.Fatalf("destino recebeu %d webhooks, esperado só o válido", n)
+}
+
+// O q chega no destino: o corpo igual, o Content-Type, o nonce como Idempotency-Key e a
+// assinatura do relay (não a do remetente). E o remetente recebe o JSON de status.
+func TestForwardedRequest(t *testing.T) {
+	s := newSetup(t, 100)
+	r := s.signed(s.clock.t, "evt_1", `{"pedido":42}`)
+	senderSig := r.Header.Get("X-Webhook-Signature")
+	rec := s.rec(r)
+	if rec.Code != http.StatusOK || rec.Header().Get("Content-Type") != "application/json" || rec.Body.String() != `{"status":"repassado"}`+"\n" {
+		t.Fatalf("resposta: HTTP %d %s %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+
+	got := <-s.last
+	h := got.header
+	if got.body != `{"pedido":42}` || h.Get("Content-Type") != "application/json" || h.Get("Idempotency-Key") != "evt_1" {
+		t.Fatalf("repasse chegou errado: headers=%v body=%s", h, got.body)
+	}
+	sig := h.Get("X-Webhook-Signature")
+	if sig == senderSig || !domain.Verify(fwdSecret, h.Get("X-Webhook-Timestamp"), "evt_1", []byte(got.body), sig) {
+		t.Fatalf("repasse sem a assinatura do relay: %v", h)
 	}
 }
 
