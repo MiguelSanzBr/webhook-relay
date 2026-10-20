@@ -163,7 +163,7 @@ func TestFailedForwardReleasesNonce(t *testing.T) {
 func TestStoreDownFailsClosed(t *testing.T) {
 	down := errors.New("redis: conexão recusada")
 
-	uc, _, fwd := newRelay()
+	uc, _, _ := newRelay()
 	uc.Limiter = fakeLimiter{err: down}
 	// read nil estoura se for chamado: sem limite confiável nem lê o corpo
 	if err := uc.Relay(context.Background(), "ip1", nil); !errors.Is(err, ErrUnavailable) || !errors.Is(err, down) {

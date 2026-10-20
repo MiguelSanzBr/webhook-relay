@@ -11,6 +11,7 @@ import (
 var (
 	ErrRateLimited  = errors.New("muitas requisições")
 	ErrBadSignature = errors.New("assinatura inválida")
+	ErrUnavailable  = errors.New("store fora, tente de novo")
 )
 
 // ForwardError é o repasse q falhou depois dos retries. Quando chega aqui o nonce já foi liberado.
@@ -33,7 +34,11 @@ type RelayWebhook struct {
 
 // Relay só chama read depois do rate limit. Erro de read volta do jeito q veio.
 func (uc *RelayWebhook) Relay(ctx context.Context, client string, read func() (domain.SignedWebhook, error)) error {
-	if !uc.Limiter.Allow(client, uc.Clock()) {
+	ok, err := uc.Limiter.Allow(ctx, client)
+	if err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	if !ok {
 		return ErrRateLimited
 	}
 	w, err := read()
@@ -43,20 +48,26 @@ func (uc *RelayWebhook) Relay(ctx context.Context, client string, read func() (d
 	if !domain.Verify(uc.Secret, w.Timestamp, w.Nonce, w.Body, w.Signature) {
 		return ErrBadSignature
 	}
-	now := uc.Clock()
-	keepUntil, err := uc.Replay.Check(w.Timestamp, now)
+	keepUntil, err := uc.Replay.Check(w.Timestamp, uc.Clock())
 	if err != nil {
 		return err
 	}
-	if !uc.Nonces.Reserve(w.Nonce, keepUntil, now) {
+	ok, err = uc.Nonces.Reserve(ctx, w.Nonce, keepUntil)
+	if err != nil {
+		return errors.Join(ErrUnavailable, err)
+	}
+	if !ok {
 		return domain.ErrReplay
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, uc.Timeout)
+	fwdCtx, cancel := context.WithTimeout(ctx, uc.Timeout)
 	defer cancel()
-	if err := uc.Forwarder.Forward(ctx, w); err != nil {
-		// o remetente vai tentar de novo com o mesmo nonce; preso, o retry legítimo levava 409
-		uc.Nonces.Release(w.Nonce)
+	if err := uc.Forwarder.Forward(fwdCtx, w); err != nil {
+		// o remetente vai tentar de novo com o mesmo nonce; preso, o retry legítimo levava 409.
+		// Libera mesmo se o remetente já desistiu, por isso sem o cancelamento do ctx dele.
+		if rerr := uc.Nonces.Release(context.WithoutCancel(ctx), w.Nonce); rerr != nil {
+			err = errors.Join(err, rerr)
+		}
 		return &ForwardError{Err: err}
 	}
 	return nil

@@ -87,8 +87,8 @@ func load(getenv func(string) string) (*config, error) {
 	return &config{addr: addr, relay: &app.RelayWebhook{
 		Secret:    []byte(secret),
 		Replay:    domain.ReplayPolicy{Window: window},
-		Nonces:    memory.NewNonces(window),
-		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}),
+		Nonces:    memory.NewNonces(window, time.Now),
+		Limiter:   memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now),
 		Forwarder: &httpforward.Forwarder{URL: target, Client: &http.Client{}, Retry: domain.RetryPolicy{MaxAttempts: attempts, BackoffBase: 200 * time.Millisecond}},
 		Clock:     time.Now,
 		Timeout:   timeout,

@@ -56,6 +56,9 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusOK, "repassado")
+	case errors.Is(err, app.ErrUnavailable):
+		h.Log.Error("store fora", "err", err)
+		writeJSON(w, http.StatusServiceUnavailable, "indisponível, tente de novo")
 	case errors.Is(err, app.ErrRateLimited):
 		w.Header().Set("Retry-After", "1")
 		writeJSON(w, http.StatusTooManyRequests, "muitas requisições")

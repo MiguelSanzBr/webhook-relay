@@ -10,15 +10,16 @@ import (
 )
 
 // NonceStore guarda os nonces já vistos. Reserve devolve false se o nonce já
-// estava lá; keepUntil diz quando ele pode sair.
+// estava lá; keepUntil diz quando ele pode sair. Erro é store fora (Redis caiu,
+// por ex.) e o caso de uso fecha: sem saber se o nonce é novo, não repassa.
 type NonceStore interface {
-	Reserve(nonce string, keepUntil, now time.Time) bool
-	Release(nonce string)
+	Reserve(ctx context.Context, nonce string, keepUntil time.Time) (bool, error)
+	Release(ctx context.Context, nonce string) error
 }
 
-// Limiter é o rate limit por cliente.
+// Limiter é o rate limit por cliente. Erro também fecha.
 type Limiter interface {
-	Allow(client string, now time.Time) bool
+	Allow(ctx context.Context, client string) (bool, error)
 }
 
 // Forwarder entrega o webhook no destino, com os retries q achar certo dentro do prazo do ctx.
