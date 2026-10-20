@@ -34,4 +34,10 @@ func TestTokenBucket(t *testing.T) {
 	if p.Refill() != 3*time.Second {
 		t.Fatalf("refill = %s, esperado 3s", p.Refill())
 	}
+	// quanto esperar pela próxima ficha: é o Retry-After do 429
+	for rate, want := range map[float64]time.Duration{1: time.Second, 4: 250 * time.Millisecond, 0.1: 10 * time.Second} {
+		if got := (TokenBucket{Rate: rate}).Interval(); got != want {
+			t.Errorf("Interval com RATE=%v: %s, esperado %s", rate, got, want)
+		}
+	}
 }

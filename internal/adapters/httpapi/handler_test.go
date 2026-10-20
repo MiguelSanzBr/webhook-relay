@@ -22,11 +22,12 @@ import (
 var secret = []byte("s3gredo")
 
 type setup struct {
-	h      http.Handler
-	relay  *app.RelayWebhook
-	clock  *fakeClock
-	calls  *atomic.Int32
-	status *atomic.Int32 // o q o destino responde agora
+	h       http.Handler
+	handler *Handler
+	relay   *app.RelayWebhook
+	clock   *fakeClock
+	calls   *atomic.Int32
+	status  *atomic.Int32 // o q o destino responde agora
 }
 
 func newSetup(t *testing.T, burst int) *setup {
@@ -47,8 +48,8 @@ func newSetup(t *testing.T, burst int) *setup {
 		Clock:     s.clock.now,
 		Timeout:   5 * time.Second,
 	}
-	h := &Handler{Relay: s.relay, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
-	s.h = h.Routes()
+	s.handler = &Handler{Relay: s.relay, RetryAfter: time.Second, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.h = s.handler.Routes()
 	return s
 }
 
@@ -63,10 +64,12 @@ func (s *setup) signed(ts time.Time, nonce, body string) *http.Request {
 	return r
 }
 
-func (s *setup) do(r *http.Request) int {
+func (s *setup) do(r *http.Request) int { return s.rec(r).Code }
+
+func (s *setup) rec(r *http.Request) *httptest.ResponseRecorder {
 	rec := httptest.NewRecorder()
 	s.h.ServeHTTP(rec, r)
-	return rec.Code
+	return rec
 }
 
 func TestWebhookChecks(t *testing.T) {
@@ -129,12 +132,19 @@ func TestDotShiftReplayIsRejected(t *testing.T) {
 
 func TestRateLimitPerIP(t *testing.T) {
 	s := newSetup(t, 2)
+	s.handler.RetryAfter = 2500 * time.Millisecond // RATE=0.4: a próxima ficha leva 2,5 s
+	var last *httptest.ResponseRecorder
 	codes := []int{}
 	for i := range 3 {
-		codes = append(codes, s.do(s.signed(s.clock.t, "n"+unix(time.Unix(int64(i), 0)), `{}`)))
+		last = s.rec(s.signed(s.clock.t, "n"+unix(time.Unix(int64(i), 0)), `{}`))
+		codes = append(codes, last.Code)
 	}
 	if codes[0] != http.StatusOK || codes[1] != http.StatusOK || codes[2] != http.StatusTooManyRequests {
 		t.Fatalf("códigos %v, esperado [200 200 429]", codes)
+	}
+	// Retry-After fixo em 1 com RATE baixo fazia o cliente voltar cedo e levar outro 429
+	if got := last.Header().Get("Retry-After"); got != "3" {
+		t.Fatalf("Retry-After=%q, esperado 3 (2,5 s pra cima)", got)
 	}
 }
 
