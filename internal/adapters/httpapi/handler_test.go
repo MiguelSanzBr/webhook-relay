@@ -1,12 +1,15 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -38,10 +41,11 @@ type setup struct {
 	calls   *atomic.Int32
 	status  *atomic.Int32 // o q o destino responde agora
 	last    chan received // último repasse, buffer de 1
+	logs    *bytes.Buffer
 }
 
 func newSetup(t *testing.T, burst int) *setup {
-	s := &setup{clock: &fakeClock{t: time.Unix(1_700_000_000, 0)}, calls: &atomic.Int32{}, status: &atomic.Int32{}, last: make(chan received, 1)}
+	s := &setup{clock: &fakeClock{t: time.Unix(1_700_000_000, 0)}, calls: &atomic.Int32{}, status: &atomic.Int32{}, last: make(chan received, 1), logs: &bytes.Buffer{}}
 	s.status.Store(http.StatusOK)
 	dst := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.calls.Add(1)
@@ -64,7 +68,7 @@ func newSetup(t *testing.T, burst int) *setup {
 		Clock:     s.clock.now,
 		Timeout:   5 * time.Second,
 	}
-	s.handler = &Handler{Relay: s.relay, RetryAfter: time.Second, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	s.handler = &Handler{Relay: s.relay, RetryAfter: time.Second, Log: slog.New(slog.NewJSONHandler(s.logs, nil))}
 	s.h = s.handler.Routes()
 	return s
 }
@@ -275,3 +279,61 @@ func unix(t time.Time) string { return strconv.FormatInt(t.Unix(), 10) }
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, errors.New("conexão caiu") }
+
+// Cada request tem um id: o de fora se for curto e limpo, senão o relay cria um. Ele volta no
+// header e vai em toda linha de log do request, inclusive na linha final com status.
+func TestRequestIDGoesToLog(t *testing.T) {
+	s := newSetup(t, 100)
+	r := s.signed(s.clock.t, "n1", `{}`)
+	r.Header.Set("X-Request-Id", "req-abc_1")
+	if got := s.rec(r).Header().Get("X-Request-Id"); got != "req-abc_1" {
+		t.Fatalf("X-Request-Id=%q, esperado o do cliente", got)
+	}
+	if !strings.Contains(s.logs.String(), `"req_id":"req-abc_1"`) || !strings.Contains(s.logs.String(), `"status":200`) {
+		t.Fatalf("log sem req_id ou status: %s", s.logs)
+	}
+
+	// assinatura errada: o warn também leva o id
+	s.logs.Reset()
+	r = s.signed(s.clock.t, "n2", `{}`)
+	r.Header.Set("X-Webhook-Signature", "sha256=00")
+	r.Header.Set("X-Request-Id", strings.Repeat("x", 200)) // comprido demais: o relay cria outro
+	id := s.rec(r).Header().Get("X-Request-Id")
+	if id == "" || len(id) > 128 {
+		t.Fatalf("id novo %q", id)
+	}
+	if !logLine(s.logs.String(), "assinatura inválida", `"req_id":"`+id+`"`) {
+		t.Fatalf("warn sem o req_id %s: %s", id, s.logs)
+	}
+}
+
+// /debug/vars conta os status por rota: dá pra responder quantos 401/409/502 teve.
+func TestStatusMetrics(t *testing.T) {
+	s := newSetup(t, 100)
+	before := statusCount(t, s, "POST /webhook 200")
+	s.do(s.signed(s.clock.t, "n1", `{}`))
+	if got := statusCount(t, s, "POST /webhook 200"); got != before+1 {
+		t.Fatalf("contador de 200 foi de %d pra %d", before, got)
+	}
+}
+
+func statusCount(t *testing.T, s *setup, key string) int {
+	t.Helper()
+	var vars struct {
+		Status map[string]int `json:"http_status"`
+	}
+	if err := json.Unmarshal(s.rec(httptest.NewRequest(http.MethodGet, "/debug/vars", nil)).Body.Bytes(), &vars); err != nil {
+		t.Fatal(err)
+	}
+	return vars.Status[key]
+}
+
+// logLine diz se alguma linha do log tem todos os pedaços.
+func logLine(logs string, parts ...string) bool {
+	for line := range strings.Lines(logs) {
+		if !slices.ContainsFunc(parts, func(p string) bool { return !strings.Contains(line, p) }) {
+			return true
+		}
+	}
+	return false
+}
