@@ -7,8 +7,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"time"
 
 	"github.com/MiguelSanzBr/webhook-relay/internal/app"
 	"github.com/MiguelSanzBr/webhook-relay/internal/domain"
@@ -20,8 +23,9 @@ var errMissingHeaders = errors.New("faltam os headers X-Webhook-Timestamp, X-Web
 
 // Handler traduz HTTP pro caso de uso e o erro dele de volta pra status.
 type Handler struct {
-	Relay *app.RelayWebhook
-	Log   *slog.Logger
+	Relay      *app.RelayWebhook
+	RetryAfter time.Duration // quanto o cliente com 429 espera, vem do RATE
+	Log        *slog.Logger
 }
 
 func (h *Handler) Routes() http.Handler {
@@ -60,7 +64,7 @@ func (h *Handler) webhook(w http.ResponseWriter, r *http.Request) {
 		h.Log.Error("store fora", "err", err)
 		writeJSON(w, http.StatusServiceUnavailable, "indisponível, tente de novo")
 	case errors.Is(err, app.ErrRateLimited):
-		w.Header().Set("Retry-After", "1")
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(h.RetryAfter.Seconds()))))
 		writeJSON(w, http.StatusTooManyRequests, "muitas requisições")
 	case errors.As(err, new(*http.MaxBytesError)):
 		writeJSON(w, http.StatusRequestEntityTooLarge, "corpo maior q 1 MiB")

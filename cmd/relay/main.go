@@ -27,8 +27,9 @@ const maxClients = 100_000
 var exit = os.Exit
 
 type config struct {
-	addr  string
-	relay *app.RelayWebhook
+	addr       string
+	relay      *app.RelayWebhook
+	retryAfter time.Duration
 }
 
 func main() {
@@ -46,7 +47,7 @@ func run(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	h := &httpapi.Handler{Relay: cfg.relay, Log: log}
+	h := &httpapi.Handler{Relay: cfg.relay, RetryAfter: cfg.retryAfter, Log: log}
 
 	srv := &http.Server{Addr: cfg.addr, Handler: h.Routes(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {
@@ -91,11 +92,12 @@ func load(getenv func(string) string) (*config, error) {
 	if addr == "" {
 		addr = ":8080"
 	}
-	return &config{addr: addr, relay: &app.RelayWebhook{
+	limit := domain.TokenBucket{Rate: rate, Burst: float64(burst)}
+	return &config{addr: addr, retryAfter: limit.Interval(), relay: &app.RelayWebhook{
 		Secret:  []byte(secret),
 		Replay:  domain.ReplayPolicy{Window: window},
 		Nonces:  memory.NewNonces(window, time.Now),
-		Limiter: memory.NewBuckets(domain.TokenBucket{Rate: rate, Burst: float64(burst)}, time.Now, maxClients),
+		Limiter: memory.NewBuckets(limit, time.Now, maxClients),
 		Forwarder: httpforward.New(target, []byte(fwdSecret), domain.RetryPolicy{
 			MaxAttempts:    attempts,
 			BackoffBase:    200 * time.Millisecond,

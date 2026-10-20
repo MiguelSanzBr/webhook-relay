@@ -35,6 +35,11 @@ func (p TokenBucket) Level(b Bucket, now time.Time) float64 {
 	return min(p.Burst, b.Tokens+now.Sub(b.Last).Seconds()*p.Rate)
 }
 
+// Interval é quanto leva pra entrar uma ficha: o Retry-After de quem levou 429.
+func (p TokenBucket) Interval() time.Duration {
+	return time.Duration(float64(time.Second) / p.Rate)
+}
+
 // Refill é o tempo pra um balde vazio encher de novo; depois disso ele é igual a um novo.
 func (p TokenBucket) Refill() time.Duration {
 	return time.Duration(p.Burst / p.Rate * float64(time.Second))
