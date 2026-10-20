@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,10 +26,13 @@ func target(t *testing.T, statuses ...int) (*httptest.Server, *atomic.Int32) {
 	return srv, &calls
 }
 
-var hook = domain.SignedWebhook{Nonce: "n"}
+var (
+	hook      = domain.SignedWebhook{Nonce: "n"}
+	fwdSecret = []byte("segredo-do-relay-pro-destino")
+)
 
 func forwarder(url string) *Forwarder {
-	return New(url, domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond, AttemptTimeout: 5 * time.Second})
+	return New(url, fwdSecret, domain.RetryPolicy{MaxAttempts: 3, BackoffBase: time.Millisecond, AttemptTimeout: 5 * time.Second})
 }
 
 func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
@@ -40,12 +44,32 @@ func TestForwardSendsBodyAndIdempotencyKey(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	if err := forwarder(srv.URL).Forward(context.Background(), domain.SignedWebhook{Nonce: "n1", ContentType: "application/json", Body: []byte(`{"a":1}`)}); err != nil {
+	in := domain.SignedWebhook{Nonce: "n1", Signature: "sha256=do-remetente", ContentType: "application/json", Body: []byte(`{"a":1}`)}
+	if err := forwarder(srv.URL).Forward(context.Background(), in); err != nil {
 		t.Fatal(err)
 	}
 	// o nonce vira Idempotency-Key: se o relay reenviar, o destino descarta a cópia
 	if got.Header.Get("Idempotency-Key") != "n1" || got.Header.Get("Content-Type") != "application/json" || string(gotBody) != `{"a":1}` {
 		t.Fatalf("repasse chegou errado: headers=%v body=%s", got.Header, gotBody)
+	}
+	// o relay assina de novo com o segredo dele: quem alcança o destino direto não passa
+	// por cima de assinatura, janela, nonce e rate limit
+	ts, sig := got.Header.Get("X-Webhook-Timestamp"), got.Header.Get("X-Webhook-Signature")
+	if got.Header.Get("X-Webhook-Nonce") != "n1" || !domain.Verify(fwdSecret, ts, "n1", gotBody, sig) {
+		t.Fatalf("repasse sem a assinatura do relay: headers=%v", got.Header)
+	}
+	if _, err := (domain.ReplayPolicy{Window: time.Minute}).Check(ts, time.Now()); err != nil {
+		t.Fatalf("timestamp do repasse %q: %v", ts, err)
+	}
+}
+
+// Erro de rede não leva a URL pro log: token na query do TARGET_URL vazava.
+func TestForwardErrorHidesURL(t *testing.T) {
+	srv := httptest.NewServer(nil)
+	srv.Close()
+	err := forwarder(srv.URL + "/?token=segredo").Forward(context.Background(), hook)
+	if err == nil || strings.Contains(err.Error(), "segredo") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

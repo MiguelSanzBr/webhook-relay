@@ -12,14 +12,17 @@ import (
 	"github.com/MiguelSanzBr/webhook-relay/internal/adapters/httpforward"
 )
 
-const goodSecret = "um-segredo-de-pelo-menos-32-caracteres"
+const (
+	goodSecret = "um-segredo-de-pelo-menos-32-caracteres"
+	fwdSecret  = "outro-segredo-so-do-relay-pro-destino"
+)
 
 func env(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
 func TestLoadConfig(t *testing.T) {
-	base := map[string]string{"WEBHOOK_SECRET": goodSecret, "TARGET_URL": "http://destino/hook"}
+	base := map[string]string{"WEBHOOK_SECRET": goodSecret, "FORWARD_SECRET": fwdSecret, "TARGET_URL": "http://destino/hook"}
 	with := func(k, v string) map[string]string {
 		m := map[string]string{}
 		for a, b := range base {
@@ -56,6 +59,10 @@ func TestLoadConfig(t *testing.T) {
 		{"sem segredo", with("WEBHOOK_SECRET", ""), "WEBHOOK_SECRET"},
 		{"segredo curto", with("WEBHOOK_SECRET", "123"), "WEBHOOK_SECRET"},
 		{"sem destino", with("TARGET_URL", ""), "TARGET_URL"},
+		{"sem segredo do repasse", with("FORWARD_SECRET", ""), "FORWARD_SECRET"},
+		{"segredo do repasse curto", with("FORWARD_SECRET", "123"), "FORWARD_SECRET"},
+		// igual ao de entrada, o webhook original já passava no destino sem o relay
+		{"segredo do repasse igual ao de entrada", with("FORWARD_SECRET", goodSecret), "FORWARD_SECRET"},
 		{"RATE não numérico", with("RATE", "muito"), "RATE"},
 		{"RATE zero", with("RATE", "0"), "RATE"},
 		{"BURST inválido", with("BURST", "-1"), "BURST"},
@@ -85,6 +92,7 @@ func TestMainGracefulShutdown(t *testing.T) {
 	addr := freeAddr(t)
 	t.Setenv("ADDR", addr)
 	t.Setenv("WEBHOOK_SECRET", goodSecret)
+	t.Setenv("FORWARD_SECRET", fwdSecret)
 	t.Setenv("TARGET_URL", "http://127.0.0.1:1/")
 	exited := -1
 	exit = func(code int) { exited = code }
@@ -122,11 +130,11 @@ func TestMainGracefulShutdown(t *testing.T) {
 func TestMainExitsWithOneOnError(t *testing.T) {
 	cases := map[string]map[string]string{
 		"config ruim":    {"WEBHOOK_SECRET": ""},
-		"porta inválida": {"WEBHOOK_SECRET": goodSecret, "TARGET_URL": "http://x/", "ADDR": "porta-que-nao-existe"},
+		"porta inválida": {"WEBHOOK_SECRET": goodSecret, "FORWARD_SECRET": fwdSecret, "TARGET_URL": "http://x/", "ADDR": "porta-que-nao-existe"},
 	}
 	for name, vars := range cases {
 		t.Run(name, func(t *testing.T) {
-			for _, k := range []string{"WEBHOOK_SECRET", "TARGET_URL", "ADDR"} {
+			for _, k := range []string{"WEBHOOK_SECRET", "FORWARD_SECRET", "TARGET_URL", "ADDR"} {
 				t.Setenv(k, vars[k])
 			}
 			exited := -1
